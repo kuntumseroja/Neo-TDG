@@ -1,0 +1,34 @@
+# CoreTax Architecture Rules
+# Used by ArchitectureValidator to validate .sln solution structure
+
+layer_dependencies:
+  Domain:
+    allowed_refs: []
+    forbidden_refs: ["Infrastructure", "Presentation", "Tests"]
+  Application:
+    allowed_refs: ["Domain", "Shared"]
+    forbidden_refs: ["Infrastructure", "Presentation"]
+  Infrastructure:
+    allowed_refs: ["Domain", "Application", "Shared"]
+    forbidden_refs: []
+  Presentation:
+    allowed_refs: ["Application", "Domain", "Shared"]
+    forbidden_refs: ["Infrastructure"]
+  Shared:
+    allowed_refs: []
+    forbidden_refs: ["Infrastructure", "Presentation"]
+
+naming_conventions:
+  Domain:
+    must_not_contain: ["Controller", "Repository", "DbContext", "Migration"]
+  Application:
+    must_contain_one_of: ["Handler", "Service", "Command", "Query", "Validator", "Dto"]
+  Infrastructure:
+    must_contain_one_of: ["Repository", "DbContext", "Migration", "Client", "Persistence"]
+  Presentation:
+    must_contain_one_of: ["Controller", "Endpoint", "Hub", "Api", "Web", "Host"]
+
+pattern_compliance:
+  commands_need_validators: true
+  handlers_need_interfaces: false
+  max_coupling_threshold: 8

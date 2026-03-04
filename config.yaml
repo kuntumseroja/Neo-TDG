@@ -1,0 +1,65 @@
+# Neo-TDG Configuration
+# TechDocGen RAG Expansion - AI-Powered SDLC Knowledge Engine
+
+# === LLM Providers ===
+llm_providers:
+  ollama:
+    enabled: true
+    model: deepseek-coder-v2:16b
+    base_url: http://localhost:11434
+    temperature: 0.3
+    max_tokens: 4000
+
+default_llm_provider: ollama
+
+# === RAG Knowledge Store ===
+knowledge_store:
+  enabled: true
+  persist_dir: "./knowledge_base"
+  embedding:
+    provider: "ollama"              # ollama | sentence-transformers
+    model: "nomic-embed-text"       # or "all-MiniLM-L6-v2"
+    batch_size: 32
+  chunking:
+    strategy: "markdown_headers"    # markdown_headers | fixed_size
+    max_tokens: 1500
+    overlap_tokens: 200
+  reranker:
+    enabled: true
+    model: "bm25_vector_fusion"     # bm25_vector_fusion | cross_encoder
+    alpha: 0.5                      # 0=pure BM25, 1=pure vector
+  auto_ingest: true
+  collection_name: "techdocgen_knowledge"
+
+# === Solution Crawler ===
+crawler:
+  solution_paths: []                # List of .sln files to crawl
+  angular_paths: []                 # Frontend roots
+  scan_depth: 10                    # Max directory depth
+  include_tests: false              # Include test projects
+  scheduler_patterns:
+    - "Hangfire"
+    - "Quartz"
+    - "IHostedService"
+  integration_patterns:
+    - "HttpClient"
+    - "IHttpClientFactory"
+    - "IConnectionMultiplexer"
+    - "IConsulClient"
+    - "IAmazonS3"
+
+# === API Server ===
+api:
+  host: "0.0.0.0"
+  port: 8080
+  cors_origins:
+    - "http://localhost:*"
+    - "http://127.0.0.1:*"
+  websocket:
+    enabled: true
+    max_connections: 50
+
+# === Output ===
+output:
+  format: markdown
+  directory: ./docs

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CoreTax.Application\CoreTax.Application.csproj" />
+    <ProjectReference Include="..\CoreTax.Infrastructure\CoreTax.Infrastructure.csproj" />
+    <ProjectReference Include="..\CoreTax.Contracts\CoreTax.Contracts.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="MassTransit" Version="8.2.1" />
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.2.1" />
+    <PackageReference Include="Hangfire" Version="1.8.9" />
+    <PackageReference Include="Hangfire.SqlServer" Version="1.8.9" />
+  </ItemGroup>
+</Project>
