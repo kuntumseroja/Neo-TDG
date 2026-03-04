@@ -1,11 +1,15 @@
-"""Solution Crawler page."""
+"""Solution Crawler page — supports local paths and GitHub URLs."""
 
 import logging
 import streamlit as st
 from src.ui.components import render_mermaid, render_carbon_tag
 from src.crawler.doc_generator import CrawlDocGenerator
+from src.readers.github_reader import GitHubReader
 
 logger = logging.getLogger(__name__)
+
+# Shared GitHub reader instance
+_github_reader = GitHubReader()
 
 
 def render_solution_crawler():
@@ -19,12 +23,109 @@ def render_solution_crawler():
         st.warning("Crawler not initialized.")
         return
 
-    # Input
-    sln_path = st.text_input(
-        "Path to .sln file",
-        placeholder="/path/to/CoreTax.sln",
-        key="sln_path",
-    )
+    # ── Source Input: Local Path or GitHub URL ─────────────────────────────
+    source_tab_local, source_tab_github = st.tabs(["📁 Local Path", "🔗 GitHub URL"])
+
+    sln_path = None
+    _github_cloned_path = None
+
+    with source_tab_local:
+        sln_path_local = st.text_input(
+            "Path to .sln file",
+            placeholder="/path/to/CoreTax.sln",
+            key="sln_path",
+        )
+        if sln_path_local:
+            sln_path = sln_path_local
+
+    with source_tab_github:
+        github_url = st.text_input(
+            "GitHub Repository URL",
+            placeholder="https://github.com/owner/repo",
+            key="github_url",
+        )
+        gh_col1, gh_col2 = st.columns([3, 1])
+        with gh_col1:
+            github_branch = st.text_input(
+                "Branch (optional)",
+                placeholder="main",
+                key="github_branch",
+            )
+        with gh_col2:
+            st.caption("")  # spacer
+            st.caption("")
+            shallow_clone = st.checkbox("Shallow clone", value=True, key="shallow_clone")
+
+        if github_url and GitHubReader.is_github_url(github_url):
+            if st.button("🔍 Clone Repository", type="primary", key="btn_clone"):
+                with st.spinner("Cloning repository..."):
+                    clone_status = st.empty()
+                    try:
+                        cloned_path = _github_reader.clone(
+                            github_url,
+                            branch=github_branch or None,
+                            shallow=shallow_clone,
+                            progress_callback=lambda msg: clone_status.text(msg),
+                        )
+                        st.session_state._github_cloned_path = cloned_path
+
+                        # Show repo summary
+                        summary = GitHubReader.get_repo_summary(cloned_path)
+                        clone_status.empty()
+                        st.success(
+                            f"Cloned successfully — {summary['total_files']} files, "
+                            f"{summary['sln_count']} .sln, "
+                            f"{summary['md_count']} .md"
+                        )
+
+                        # Show top file extensions
+                        top_exts = list(summary["extensions"].items())[:8]
+                        ext_tags = " ".join(
+                            render_carbon_tag(f"{ext} ({count})", "#e0e0e0", "#161616")
+                            for ext, count in top_exts
+                        )
+                        st.markdown(ext_tags, unsafe_allow_html=True)
+
+                        # Show discovered .sln files
+                        sln_files = GitHubReader.find_solution_files(cloned_path)
+                        if sln_files:
+                            st.markdown(f"**Found {len(sln_files)} solution file(s):**")
+                            for sf in sln_files:
+                                st.text(f"  📄 {sf}")
+                        else:
+                            st.info(
+                                "No .sln files found. You can still ingest markdown "
+                                "and source files via the Knowledge Store page."
+                            )
+
+                    except Exception as e:
+                        clone_status.empty()
+                        st.error(f"Clone failed: {e}")
+
+        elif github_url:
+            st.warning("Please enter a valid GitHub URL (https://github.com/owner/repo)")
+
+        # Use cloned path if available
+        _github_cloned_path = st.session_state.get("_github_cloned_path")
+        if _github_cloned_path:
+            sln_files = GitHubReader.find_solution_files(_github_cloned_path)
+            if sln_files:
+                selected_sln = st.selectbox(
+                    "Select solution to crawl",
+                    sln_files,
+                    key="selected_sln",
+                    format_func=lambda x: x.split("/")[-1],
+                )
+                sln_path = selected_sln
+
+            # Cleanup button
+            if st.button("🗑️ Clear cloned repo", key="btn_cleanup"):
+                _github_reader.cleanup(_github_cloned_path)
+                st.session_state._github_cloned_path = None
+                st.rerun()
+
+    # ── Crawl & Ingest Buttons ────────────────────────────────────────────
+    st.divider()
 
     col1, col2 = st.columns(2)
     with col1:
@@ -107,7 +208,7 @@ def render_solution_crawler():
     # Display results
     report = st.session_state.get("last_crawl_report")
     if not report:
-        st.info("No crawl results yet. Enter a .sln path and click Crawl.")
+        st.info("No crawl results yet. Enter a .sln path or GitHub URL and click Crawl.")
         return
 
     st.divider()

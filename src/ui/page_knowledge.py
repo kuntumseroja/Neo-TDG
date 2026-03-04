@@ -1,7 +1,11 @@
-"""Knowledge Store management page."""
+"""Knowledge Store management page — supports local paths and GitHub URLs."""
 
 import streamlit as st
 from pathlib import Path
+from src.readers.github_reader import GitHubReader
+
+# Shared GitHub reader instance
+_github_reader = GitHubReader()
 
 
 def render_knowledge_management():
@@ -47,7 +51,9 @@ def render_knowledge_management():
     # Ingest section
     st.subheader("Ingest Documents")
 
-    tab1, tab2, tab3 = st.tabs(["Markdown Files", "TechDocGen Output", "Rebuild"])
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["📁 Markdown Files", "🔗 GitHub Repository", "📦 TechDocGen Output", "🔄 Rebuild"]
+    )
 
     with tab1:
         ingest_path = st.text_input(
@@ -97,6 +103,9 @@ def render_knowledge_management():
                     st.error(f"Path not found: {ingest_path}")
 
     with tab2:
+        _render_github_ingest_tab(pipeline)
+
+    with tab3:
         tdg_docs_dir = st.text_input(
             "TechDocGen docs directory",
             value=str(Path(__file__).resolve().parent.parent.parent.parent / "TechDocGen" / "docs"),
@@ -116,7 +125,7 @@ def render_knowledge_management():
                         f"{result['total_chunks']} chunks created."
                     )
 
-    with tab3:
+    with tab4:
         st.warning("This will drop all existing data and rebuild from scratch.")
         rebuild_dir = st.text_input("Directory to rebuild from", key="rebuild_dir")
         if st.button("Rebuild Index", type="secondary", key="btn_rebuild"):
@@ -150,3 +159,113 @@ def render_knowledge_management():
                     st.rerun()
     else:
         st.info("No documents in the knowledge store. Ingest some documents to get started.")
+
+
+def _render_github_ingest_tab(pipeline):
+    """Render the GitHub Repository ingest tab."""
+
+    gh_url = st.text_input(
+        "GitHub Repository URL",
+        placeholder="https://github.com/owner/repo",
+        key="gh_ingest_url",
+    )
+    gh_col1, gh_col2 = st.columns([3, 1])
+    with gh_col1:
+        gh_branch = st.text_input(
+            "Branch (optional)",
+            placeholder="main",
+            key="gh_ingest_branch",
+        )
+    with gh_col2:
+        gh_service = st.text_input(
+            "Service Name (optional)",
+            key="gh_ingest_service",
+        )
+
+    ingest_type = st.radio(
+        "What to ingest",
+        ["📄 Markdown files (.md)", "💻 All source code files", "📄 + 💻 Both"],
+        key="gh_ingest_type",
+        horizontal=True,
+    )
+
+    if not gh_url:
+        st.info("Enter a GitHub repository URL to clone and ingest its contents.")
+        return
+
+    if not GitHubReader.is_github_url(gh_url):
+        st.warning("Please enter a valid GitHub URL (https://github.com/owner/repo)")
+        return
+
+    if st.button("🔍 Clone & Ingest", type="primary", key="btn_gh_ingest"):
+        clone_status = st.empty()
+        try:
+            # Step 1: Clone
+            with st.spinner("Cloning repository..."):
+                cloned_path = _github_reader.clone(
+                    gh_url,
+                    branch=gh_branch or None,
+                    shallow=True,
+                    progress_callback=lambda msg: clone_status.text(msg),
+                )
+                clone_status.empty()
+
+            # Step 2: Discover files
+            summary = GitHubReader.get_repo_summary(cloned_path)
+            st.success(
+                f"Cloned — {summary['total_files']} files, "
+                f"{summary['md_count']} markdown, "
+                f"{summary['sln_count']} solutions"
+            )
+
+            # Step 3: Ingest
+            metadata = {"source": "github", "github_url": gh_url}
+            if gh_service:
+                metadata["service_name"] = gh_service
+
+            total_chunks = 0
+
+            # Ingest markdown files
+            if ingest_type in ["📄 Markdown files (.md)", "📄 + 💻 Both"]:
+                md_files = GitHubReader.find_markdown_files(cloned_path)
+                if md_files:
+                    with st.spinner(f"Ingesting {len(md_files)} markdown files..."):
+                        progress_bar = st.progress(0)
+                        for i, md_file in enumerate(md_files):
+                            try:
+                                chunks = pipeline.ingest_markdown_file(
+                                    md_file, {**metadata, "source_file": md_file}
+                                )
+                                total_chunks += chunks
+                            except Exception as e:
+                                st.warning(f"Skipped {Path(md_file).name}: {e}")
+                            progress_bar.progress((i + 1) / len(md_files))
+                        progress_bar.progress(1.0)
+                    st.info(f"Markdown: ingested {len(md_files)} files, {total_chunks} chunks")
+
+            # Ingest source code files
+            if ingest_type in ["💻 All source code files", "📄 + 💻 Both"]:
+                source_files = GitHubReader.find_source_files(cloned_path)
+                if source_files:
+                    src_chunks = 0
+                    with st.spinner(f"Ingesting {len(source_files)} source files..."):
+                        progress_bar2 = st.progress(0)
+                        for i, src_file in enumerate(source_files):
+                            try:
+                                chunks = pipeline.ingest_markdown_file(
+                                    src_file,
+                                    {**metadata, "source_file": src_file, "chunk_type": "source_code"},
+                                )
+                                src_chunks += chunks
+                                total_chunks += chunks
+                            except Exception:
+                                pass  # Skip binary/unreadable files silently
+                            progress_bar2.progress((i + 1) / len(source_files))
+                        progress_bar2.progress(1.0)
+                    st.info(f"Source code: ingested {len(source_files)} files, {src_chunks} chunks")
+
+            st.success(f"✅ Total: {total_chunks} chunks ingested from {gh_url}")
+
+        except Exception as e:
+            clone_status.empty()
+            st.error(f"Failed: {e}")
