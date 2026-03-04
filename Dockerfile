@@ -26,6 +26,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Use cloud config for deployment (Groq free tier by default)
+RUN if [ -f config.cloud.yaml ]; then cp config.cloud.yaml config.yaml; fi
+
 # Create knowledge_base directory for persistence
 RUN mkdir -p /app/knowledge_base
 
