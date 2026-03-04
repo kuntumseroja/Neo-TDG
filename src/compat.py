@@ -1,23 +1,38 @@
 """
-Compatibility bridge for importing from the existing TechDocGen project.
+Standalone module exports for Neo-TDG.
 
-Uses importlib to load TechDocGen modules directly by path, avoiding
-conflicts with Neo-TDG's own 'src' package.
+Provides LLM infrastructure (BaseLLM, OllamaLLM, LLMFactory) using
+Neo-TDG's own standalone providers. No dependency on TechDocGen.
+
+Optional modules (parsers, readers, analyzers) are only available
+when TechDocGen is present in the parent directory — they gracefully
+fall back to None when absent.
 """
 import sys
 import importlib
 import importlib.util
+import logging
 from pathlib import Path
 
-# Resolve the TechDocGen root relative to this file
-# Neo-TDG/src/compat.py -> ../../TechDocGen
-_TECHDOCGEN_ROOT = Path(__file__).resolve().parent.parent.parent / "TechDocGen"
+logger = logging.getLogger(__name__)
 
-if not _TECHDOCGEN_ROOT.exists():
-    raise ImportError(
-        f"TechDocGen not found at {_TECHDOCGEN_ROOT}. "
-        "Expected at ../TechDocGen/ relative to Neo-TDG/"
-    )
+# ── LLM Core (always available — standalone) ─────────────────────────────────
+
+from src.llm.base import BaseLLM
+from src.llm.ollama_llm import OllamaLLM
+from src.llm.factory import LLMFactory
+
+TDGConfig = None  # Not needed in standalone mode
+
+logger.info("Using standalone Neo-TDG LLM providers (Ollama)")
+
+
+# ── Optional TechDocGen modules (graceful fallback to None) ──────────────────
+# These are only available when TechDocGen is present alongside Neo-TDG.
+# They provide C#/.NET-specific parsing and analysis capabilities.
+
+_TECHDOCGEN_ROOT = Path(__file__).resolve().parent.parent.parent / "TechDocGen"
+_USE_TECHDOCGEN = _TECHDOCGEN_ROOT.exists()
 
 
 def _load_tdg_module(module_name: str, file_path: str):
@@ -32,80 +47,73 @@ def _load_tdg_module(module_name: str, file_path: str):
     return mod
 
 
-# Load TechDocGen modules with unique prefixed names to avoid conflicts
-_base_llm_mod = _load_tdg_module("tdg.llm.base_llm", "src/llm/base_llm.py")
-_ollama_llm_mod = _load_tdg_module("tdg.llm.ollama_llm", "src/llm/ollama_llm.py")
-_mcp_llm_mod = _load_tdg_module("tdg.llm.mcp_llm", "src/llm/mcp_llm.py")
-_llm_factory_mod = _load_tdg_module("tdg.llm.llm_factory", "src/llm/llm_factory.py")
-_config_mod = _load_tdg_module("tdg.config", "src/config.py")
+if _USE_TECHDOCGEN:
+    logger.info(f"TechDocGen found at {_TECHDOCGEN_ROOT} — loading optional modules")
+else:
+    logger.info("TechDocGen not found — optional C#/.NET modules not available")
 
-BaseLLM = _base_llm_mod.BaseLLM
-OllamaLLM = _ollama_llm_mod.OllamaLLM
-LLMFactory = _llm_factory_mod.LLMFactory
-TDGConfig = _config_mod.Config
-
-# Optional modules — load if available, skip if missing
 try:
-    _csharp_mod = _load_tdg_module("tdg.parsers.csharp_parser", "src/parsers/csharp_parser.py")
-    CSharpParser = _csharp_mod.CSharpParser
+    _csharp_mod = _load_tdg_module("tdg.parsers.csharp_parser", "src/parsers/csharp_parser.py") if _USE_TECHDOCGEN else None
+    CSharpParser = _csharp_mod.CSharpParser if _csharp_mod else None
 except Exception:
     CSharpParser = None
 
 try:
-    _solution_mod = _load_tdg_module("tdg.parsers.solution_parser", "src/parsers/solution_parser.py")
-    SolutionParser = _solution_mod.SolutionParser
-    CsprojParser = _solution_mod.CsprojParser
+    _solution_mod = _load_tdg_module("tdg.parsers.solution_parser", "src/parsers/solution_parser.py") if _USE_TECHDOCGEN else None
+    SolutionParser = _solution_mod.SolutionParser if _solution_mod else None
+    CsprojParser = _solution_mod.CsprojParser if _solution_mod else None
 except Exception:
     SolutionParser = None
     CsprojParser = None
 
 try:
-    _folder_mod = _load_tdg_module("tdg.readers.folder_reader", "src/readers/folder_reader.py")
-    FolderReader = _folder_mod.FolderReader
+    _folder_mod = _load_tdg_module("tdg.readers.folder_reader", "src/readers/folder_reader.py") if _USE_TECHDOCGEN else None
+    FolderReader = _folder_mod.FolderReader if _folder_mod else None
 except Exception:
     FolderReader = None
 
 try:
-    _git_mod = _load_tdg_module("tdg.readers.git_reader", "src/readers/git_reader.py")
-    GitReader = _git_mod.GitReader
+    _git_mod = _load_tdg_module("tdg.readers.git_reader", "src/readers/git_reader.py") if _USE_TECHDOCGEN else None
+    GitReader = _git_mod.GitReader if _git_mod else None
 except Exception:
     GitReader = None
 
 try:
-    _dep_mod = _load_tdg_module("tdg.dependency_analyzer", "src/dependency_analyzer.py")
-    DependencyAnalyzer = _dep_mod.DependencyAnalyzer
+    _dep_mod = _load_tdg_module("tdg.dependency_analyzer", "src/dependency_analyzer.py") if _USE_TECHDOCGEN else None
+    DependencyAnalyzer = _dep_mod.DependencyAnalyzer if _dep_mod else None
 except Exception:
     DependencyAnalyzer = None
 
 try:
-    _svc_mod = _load_tdg_module("tdg.service_catalog", "src/service_catalog.py")
-    build_service_catalog = _svc_mod.build_service_catalog
+    _svc_mod = _load_tdg_module("tdg.service_catalog", "src/service_catalog.py") if _USE_TECHDOCGEN else None
+    build_service_catalog = _svc_mod.build_service_catalog if _svc_mod else None
 except Exception:
     build_service_catalog = None
 
 try:
-    _ddd_mod = _load_tdg_module("tdg.ddd_documentation", "src/ddd_documentation.py")
-    build_ddd_documentation = _ddd_mod.build_ddd_documentation
+    _ddd_mod = _load_tdg_module("tdg.ddd_documentation", "src/ddd_documentation.py") if _USE_TECHDOCGEN else None
+    build_ddd_documentation = _ddd_mod.build_ddd_documentation if _ddd_mod else None
 except Exception:
     build_ddd_documentation = None
 
 try:
-    _disc_mod = _load_tdg_module("tdg.solution_discovery", "src/solution_discovery.py")
-    discover_from_solution = _disc_mod.discover_from_solution
+    _disc_mod = _load_tdg_module("tdg.solution_discovery", "src/solution_discovery.py") if _USE_TECHDOCGEN else None
+    discover_from_solution = _disc_mod.discover_from_solution if _disc_mod else None
 except Exception:
     discover_from_solution = None
 
 try:
-    _cg_mod = _load_tdg_module("tdg.call_graph_analyzer", "src/call_graph_analyzer.py")
-    build_csharp_class_call_graphs = _cg_mod.build_csharp_class_call_graphs
+    _cg_mod = _load_tdg_module("tdg.call_graph_analyzer", "src/call_graph_analyzer.py") if _USE_TECHDOCGEN else None
+    build_csharp_class_call_graphs = _cg_mod.build_csharp_class_call_graphs if _cg_mod else None
 except Exception:
     build_csharp_class_call_graphs = None
 
 try:
-    _mt_mod = _load_tdg_module("tdg.flow_extractors.mass_transit", "src/flow_extractors/mass_transit.py")
-    MassTransitFlowExtractor = _mt_mod.MassTransitFlowExtractor
+    _mt_mod = _load_tdg_module("tdg.flow_extractors.mass_transit", "src/flow_extractors/mass_transit.py") if _USE_TECHDOCGEN else None
+    MassTransitFlowExtractor = _mt_mod.MassTransitFlowExtractor if _mt_mod else None
 except Exception:
     MassTransitFlowExtractor = None
+
 
 __all__ = [
     "BaseLLM",
