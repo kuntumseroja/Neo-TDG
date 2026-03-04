@@ -1,0 +1,40 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.egg-info
+dist
+build
+.venv
+venv
+env
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Knowledge base data (will be created at runtime)
+knowledge_base/chroma/
+knowledge_base/*.db
+
+# Environment secrets
+.env
+
+# Docs and examples (optional - uncomment to reduce image size)
+# docs/
+# examples/
+# PRD_TechDocGen_RAG_Expansion.md
+# *.pdf
+
+# Claude
+.claude/

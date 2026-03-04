@@ -1,0 +1,21 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Deploy: connect GitHub repo, Render auto-detects this file
+
+services:
+  - type: web
+    name: neo-tdg
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: PORT
+        value: 7860
+      - key: STREAMLIT_SERVER_PORT
+        value: 7860
+      - key: OLLAMA_BASE_URL
+        sync: false  # Set manually in dashboard
+    disk:
+      name: knowledge-base
+      mountPath: /app/knowledge_base
+      sizeGB: 1

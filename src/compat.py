@@ -1,12 +1,8 @@
 """
-Standalone module exports for Neo-TDG.
+Compatibility bridge for importing from the existing TechDocGen project.
 
-Provides LLM infrastructure (BaseLLM, OllamaLLM, LLMFactory) using
-Neo-TDG's own standalone providers. No dependency on TechDocGen.
-
-Optional modules (parsers, readers, analyzers) are only available
-when TechDocGen is present in the parent directory — they gracefully
-fall back to None when absent.
+When TechDocGen is available (local dev), loads from there.
+When NOT available (cloud deployment), falls back to Neo-TDG's standalone providers.
 """
 import sys
 import importlib
@@ -16,22 +12,10 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# ── LLM Core (always available — standalone) ─────────────────────────────────
-
-from src.llm.base import BaseLLM
-from src.llm.ollama_llm import OllamaLLM
-from src.llm.factory import LLMFactory
-
-TDGConfig = None  # Not needed in standalone mode
-
-logger.info("Using standalone Neo-TDG LLM providers (Ollama)")
-
-
-# ── Optional TechDocGen modules (graceful fallback to None) ──────────────────
-# These are only available when TechDocGen is present alongside Neo-TDG.
-# They provide C#/.NET-specific parsing and analysis capabilities.
-
+# Resolve the TechDocGen root relative to this file
+# Neo-TDG/src/compat.py -> ../../TechDocGen
 _TECHDOCGEN_ROOT = Path(__file__).resolve().parent.parent.parent / "TechDocGen"
+
 _USE_TECHDOCGEN = _TECHDOCGEN_ROOT.exists()
 
 
@@ -47,10 +31,57 @@ def _load_tdg_module(module_name: str, file_path: str):
     return mod
 
 
+# ── LLM Core (always available) ──────────────────────────────────────────────
+
 if _USE_TECHDOCGEN:
-    logger.info(f"TechDocGen found at {_TECHDOCGEN_ROOT} — loading optional modules")
-else:
-    logger.info("TechDocGen not found — optional C#/.NET modules not available")
+    try:
+        _base_llm_mod = _load_tdg_module("tdg.llm.base_llm", "src/llm/base_llm.py")
+        _ollama_llm_mod = _load_tdg_module("tdg.llm.ollama_llm", "src/llm/ollama_llm.py")
+        _llm_factory_mod = _load_tdg_module("tdg.llm.llm_factory", "src/llm/llm_factory.py")
+        _config_mod = _load_tdg_module("tdg.config", "src/config.py")
+
+        BaseLLM = _base_llm_mod.BaseLLM
+        OllamaLLM = _ollama_llm_mod.OllamaLLM
+        _TDGLLMFactory = _llm_factory_mod.LLMFactory
+        TDGConfig = _config_mod.Config
+
+        # Wrap TDG factory to also support cloud providers
+        from src.llm.factory import LLMFactory as _StandaloneLLMFactory
+
+        class LLMFactory:
+            """Hybrid factory: tries TechDocGen first, falls back to standalone."""
+
+            @staticmethod
+            def create(provider_name: str, config: dict):
+                if provider_name in ("groq", "openai", "together"):
+                    return _StandaloneLLMFactory.create(provider_name, config)
+                try:
+                    return _TDGLLMFactory.create(provider_name, config)
+                except Exception:
+                    return _StandaloneLLMFactory.create(provider_name, config)
+
+        logger.info("Using TechDocGen LLM modules (with cloud provider support)")
+
+    except Exception as e:
+        logger.warning(f"TechDocGen LLM load failed: {e}, using standalone providers")
+        _USE_TECHDOCGEN = False
+
+if not _USE_TECHDOCGEN:
+    # ── Standalone mode (cloud deployment) ────────────────────────────────
+    from src.llm.base import BaseLLM
+    from src.llm.ollama_llm import OllamaLLM
+    from src.llm.factory import LLMFactory
+
+    TDGConfig = None
+    logger.info("Using standalone Neo-TDG LLM providers (cloud mode)")
+
+
+# ── Optional TechDocGen modules (graceful fallback to None) ──────────────────
+
+try:
+    _mcp_llm_mod = _load_tdg_module("tdg.llm.mcp_llm", "src/llm/mcp_llm.py") if _USE_TECHDOCGEN else None
+except Exception:
+    _mcp_llm_mod = None
 
 try:
     _csharp_mod = _load_tdg_module("tdg.parsers.csharp_parser", "src/parsers/csharp_parser.py") if _USE_TECHDOCGEN else None

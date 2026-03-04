@@ -1,7 +1,7 @@
-"""LLM Factory — creates Ollama LLM provider from config.
+"""LLM Factory — creates LLM providers from config.
 
-This is the standalone factory for local Ollama deployment.
-For cloud providers (Groq, OpenAI, Together), see the feature-full-cloud branch.
+Supports: ollama, groq, openai, together
+This is the standalone factory that works without TechDocGen.
 """
 
 import os
@@ -19,7 +19,7 @@ class LLMFactory:
         """Create an LLM instance based on provider name and config.
 
         Args:
-            provider_name: Currently only 'ollama' is supported on main.
+            provider_name: One of 'ollama', 'groq', 'openai', 'together'
             config: Full application config dict
 
         Returns:
@@ -29,10 +29,7 @@ class LLMFactory:
 
         if provider_name == "ollama":
             from src.llm.ollama_llm import OllamaLLM
-            base_url = provider_config.get(
-                "base_url",
-                os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
-            )
+            base_url = provider_config.get("base_url", os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
             return OllamaLLM(
                 base_url=base_url,
                 model=provider_config.get("model", "llama3.2"),
@@ -40,15 +37,42 @@ class LLMFactory:
                 max_tokens=provider_config.get("max_tokens", 4000),
             )
 
+        elif provider_name == "groq":
+            from src.llm.groq_llm import GroqLLM
+            return GroqLLM(
+                api_key=provider_config.get("api_key", os.environ.get("GROQ_API_KEY")),
+                model=provider_config.get("model", "llama-3.3-70b-versatile"),
+                temperature=provider_config.get("temperature", 0.3),
+                max_tokens=provider_config.get("max_tokens", 4000),
+            )
+
+        elif provider_name == "openai":
+            from src.llm.openai_llm import OpenAILLM
+            return OpenAILLM(
+                api_key=provider_config.get("api_key", os.environ.get("OPENAI_API_KEY")),
+                model=provider_config.get("model", "gpt-4o-mini"),
+                temperature=provider_config.get("temperature", 0.3),
+                max_tokens=provider_config.get("max_tokens", 4000),
+                base_url=provider_config.get("base_url"),
+            )
+
+        elif provider_name == "together":
+            from src.llm.openai_llm import OpenAILLM
+            return OpenAILLM(
+                api_key=provider_config.get("api_key", os.environ.get("TOGETHER_API_KEY")),
+                model=provider_config.get("model", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
+                temperature=provider_config.get("temperature", 0.3),
+                max_tokens=provider_config.get("max_tokens", 4000),
+                base_url=provider_config.get("base_url", "https://api.together.xyz/v1"),
+            )
+
         else:
             raise ValueError(
                 f"Unknown LLM provider: '{provider_name}'. "
-                f"Supported on main branch: ollama. "
-                f"For cloud providers (groq, openai, together), "
-                f"see the feature-full-cloud branch."
+                f"Supported: ollama, groq, openai, together"
             )
 
     @staticmethod
     def available_providers() -> list:
         """List available provider names."""
-        return ["ollama"]
+        return ["ollama", "groq", "openai", "together"]

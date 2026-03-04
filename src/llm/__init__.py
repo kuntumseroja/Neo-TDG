@@ -1,4 +1,8 @@
-"""Standalone LLM providers for Neo-TDG (Ollama-only)."""
+"""Standalone LLM providers for Neo-TDG cloud deployment.
+
+These providers work independently without the TechDocGen parent project,
+enabling deployment to cloud platforms (HF Spaces, Railway, Render, etc.).
+"""
 
 from src.llm.base import BaseLLM
 from src.llm.ollama_llm import OllamaLLM

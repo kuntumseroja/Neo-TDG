@@ -1,0 +1,97 @@
+# Neo-TDG Cloud Configuration
+# Use this config for cloud deployment (no local Ollama required)
+#
+# QUICK SETUP:
+#   cp config.cloud.yaml config.yaml
+#   export GROQ_API_KEY="your-key-here"   # Free at https://console.groq.com/keys
+#
+# Then deploy to any platform!
+
+# === LLM Providers ===
+llm_providers:
+  # Groq — FREE tier, ultra-fast LPU inference (recommended for cloud)
+  groq:
+    enabled: true
+    model: llama-3.3-70b-versatile    # or: gemma2-9b-it, mixtral-8x7b-32768
+    temperature: 0.3
+    max_tokens: 4000
+    # api_key set via GROQ_API_KEY env var
+
+  # OpenAI — GPT-4o, GPT-4o-mini
+  openai:
+    enabled: false
+    model: gpt-4o-mini
+    temperature: 0.3
+    max_tokens: 4000
+    # api_key set via OPENAI_API_KEY env var
+
+  # Together AI — open-source models, OpenAI-compatible API
+  together:
+    enabled: false
+    model: meta-llama/Llama-3.3-70B-Instruct-Turbo
+    base_url: https://api.together.xyz/v1
+    temperature: 0.3
+    max_tokens: 4000
+    # api_key set via TOGETHER_API_KEY env var
+
+  # Ollama — for self-hosted or remote Ollama instances
+  ollama:
+    enabled: false
+    model: llama3.2
+    base_url: http://ollama:11434   # Docker service name, or your remote URL
+    temperature: 0.3
+    max_tokens: 4000
+
+# Which provider to use (groq | openai | together | ollama)
+default_llm_provider: groq
+
+# === RAG Knowledge Store ===
+knowledge_store:
+  enabled: true
+  persist_dir: "./knowledge_base"
+  embedding:
+    provider: "sentence-transformers"   # No Ollama needed! Runs locally in container
+    model: "all-MiniLM-L6-v2"          # Small, fast, 384-dim embeddings
+    batch_size: 32
+  chunking:
+    strategy: "markdown_headers"
+    max_tokens: 1500
+    overlap_tokens: 200
+  reranker:
+    enabled: true
+    model: "bm25_vector_fusion"
+    alpha: 0.5
+  auto_ingest: true
+  collection_name: "techdocgen_knowledge"
+
+# === Solution Crawler ===
+crawler:
+  solution_paths: []
+  angular_paths: []
+  scan_depth: 10
+  include_tests: false
+  scheduler_patterns:
+    - "Hangfire"
+    - "Quartz"
+    - "IHostedService"
+  integration_patterns:
+    - "HttpClient"
+    - "IHttpClientFactory"
+    - "IConnectionMultiplexer"
+    - "IConsulClient"
+    - "IAmazonS3"
+
+# === API Server ===
+api:
+  host: "0.0.0.0"
+  port: 8080
+  cors_origins:
+    - "*"
+  websocket:
+    enabled: true
+    max_connections: 50
+
+# === Output ===
+output:
+  format: markdown
+  directory: ./docs
