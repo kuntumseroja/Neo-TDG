@@ -32,6 +32,10 @@ Thumbs.db
 # Streamlit
 .streamlit/secrets.toml
 
+# Lumen.AI service lifecycle
+.run/
+logs/
+
 # Claude
 .claude/
 
