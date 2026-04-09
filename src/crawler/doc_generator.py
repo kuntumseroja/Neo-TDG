@@ -8,15 +8,36 @@ import re
 import logging
 from datetime import datetime
 from collections import defaultdict
-from typing import List
+from typing import List, Dict
 
 from src.models.crawler import CrawlReport
 
 logger = logging.getLogger(__name__)
 
 
+def _describe_llm(llm) -> str:
+    """Return a short model label for the report header.
+
+    Examples: ``llama3.2``, ``deepseek-coder:6.7b``, ``gemma2:9b``. When no
+    LLM is configured we return a sentinel string so the header still reads
+    naturally ("...using no LLM (deterministic only)").
+    """
+    if llm is None:
+        return "no LLM (deterministic only)"
+    return str(getattr(llm, "model", None) or "unknown model")
+
+
 class CrawlDocGenerator:
     """Generate technical documentation from a CrawlReport."""
+
+    def __init__(self, llm=None):
+        """
+        Args:
+            llm: Optional BaseLLM instance — used only to stamp the model
+                name/version into the report header. Doc generation itself
+                is deterministic and does not call the LLM.
+        """
+        self.llm = llm
 
     def generate_markdown(self, report: CrawlReport) -> str:
         """Generate comprehensive markdown documentation from crawl results."""
@@ -26,6 +47,7 @@ class CrawlDocGenerator:
             self._section_business_domains(report),
             self._section_domain_contracts(report),
             self._section_sequence_flows(report),
+            self._section_code_flow(report),
             self._section_architecture_diagram(report),
             self._section_projects(report),
             self._section_configurations(report),
@@ -36,6 +58,7 @@ class CrawlDocGenerator:
             self._section_schedulers(report),
             self._section_integrations(report),
             self._section_data_models(report),
+            self._section_er_diagram(report),
             self._section_ui_components(report),
             self._section_dependency_graph(report),
         ]
@@ -60,21 +83,37 @@ class CrawlDocGenerator:
 
         lines = markdown_content.split("\n")
         in_code_block = False
+        in_mermaid_block = False
+        mermaid_buffer: List[str] = []
         table_rows = []
 
         for line in lines:
             # Code block toggle
             if line.strip().startswith("```"):
                 if in_code_block:
+                    # Closing fence
+                    if in_mermaid_block:
+                        self._render_mermaid_image(pdf, "\n".join(mermaid_buffer))
+                        mermaid_buffer = []
+                        in_mermaid_block = False
                     in_code_block = False
                     pdf.ln(2)
                 else:
+                    # Opening fence — detect language
+                    lang = line.strip()[3:].strip().lower()
                     in_code_block = True
-                    pdf.set_font("Courier", size=7)
-                    pdf.set_fill_color(240, 240, 240)
+                    if lang == "mermaid":
+                        in_mermaid_block = True
+                        mermaid_buffer = []
+                    else:
+                        pdf.set_font("Courier", size=7)
+                        pdf.set_fill_color(240, 240, 240)
                 continue
 
             if in_code_block:
+                if in_mermaid_block:
+                    mermaid_buffer.append(line)
+                    continue
                 pdf.set_font("Courier", size=7)
                 pdf.set_fill_color(240, 240, 240)
                 text = line.rstrip()
@@ -175,6 +214,72 @@ class CrawlDocGenerator:
 
         pdf.ln(3)
 
+    # ── Mermaid → PNG rendering ────────────────────────────────────────
+
+    _MERMAID_PNG_CACHE: Dict[str, bytes] = {}
+
+    def _render_mermaid_image(self, pdf, mermaid_src: str):
+        """Fetch a PNG of the given mermaid source from kroki.io and embed
+        it into the PDF. Falls back to rendering the source as a code
+        block if the network call fails (so offline runs still work)."""
+        from fpdf.enums import XPos, YPos
+
+        png = self._fetch_mermaid_png(mermaid_src)
+        if png:
+            try:
+                import io
+                bio = io.BytesIO(png)
+                page_w = pdf.w - pdf.l_margin - pdf.r_margin
+                # Trigger an auto page-break if there isn't enough vertical room.
+                if pdf.get_y() + 60 > pdf.h - pdf.b_margin:
+                    pdf.add_page()
+                pdf.image(bio, x=pdf.l_margin, w=page_w)
+                pdf.ln(3)
+                return
+            except Exception as e:
+                logger.warning(f"PDF mermaid image embed failed: {e}")
+
+        # Fallback: render the source as a code block so we still show
+        # *something* even if kroki is unreachable.
+        pdf.set_font("Courier", size=7)
+        pdf.set_fill_color(240, 240, 240)
+        for src_line in mermaid_src.splitlines():
+            text = src_line.rstrip()
+            if len(text) > 120:
+                text = text[:120] + "..."
+            pdf.cell(0, 4, self._ascii_safe(text), new_x=XPos.LMARGIN, new_y=YPos.NEXT, fill=True)
+        pdf.ln(2)
+
+    @classmethod
+    def _fetch_mermaid_png(cls, mermaid_src: str) -> bytes:
+        """Render mermaid → PNG via kroki.io. Cached per source string.
+        Returns empty bytes on any failure."""
+        if not mermaid_src.strip():
+            return b""
+        if mermaid_src in cls._MERMAID_PNG_CACHE:
+            return cls._MERMAID_PNG_CACHE[mermaid_src]
+        try:
+            import base64
+            import zlib
+            import urllib.request
+            # Kroki URL-safe deflate+base64 encoding
+            compressed = zlib.compress(mermaid_src.encode("utf-8"), 9)
+            encoded = base64.urlsafe_b64encode(compressed).decode("ascii")
+            url = f"https://kroki.io/mermaid/png/{encoded}"
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Lumen.AI-DocGen/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                data = resp.read()
+            if data and data[:8] == b"\x89PNG\r\n\x1a\n":
+                cls._MERMAID_PNG_CACHE[mermaid_src] = data
+                return data
+            logger.warning("Kroki returned non-PNG payload")
+        except Exception as e:
+            logger.warning(f"Kroki mermaid render failed: {e}")
+        cls._MERMAID_PNG_CACHE[mermaid_src] = b""
+        return b""
+
     # Unicode chars not representable in fpdf2's built-in latin-1 helvetica.
     # Keep this list narrow — anything else falls back to "?".
     _PDF_UNICODE_MAP = {
@@ -219,9 +324,11 @@ class CrawlDocGenerator:
 
     def _section_title(self, report: CrawlReport) -> str:
         sln_name = report.solution.replace("\\", "/").split("/")[-1]
+        from src import __version__ as lumen_version
+        llm_label = _describe_llm(self.llm)
         return (
             f"# {sln_name} - Technical Documentation\n\n"
-            f"> Auto-generated by Lumen.AI Solution Crawler\n"
+            f"> Generated by **Lumen.AI Solution Crawler** v{lumen_version} using `{llm_label}`\n"
             f"> Crawled at: {report.crawled_at.strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
@@ -433,8 +540,9 @@ class CrawlDocGenerator:
             if not c.api_calls:
                 continue
             comp_id = self._mermaid_id(c.name)
+            comp_label = self._mermaid_label(c.name)
             if comp_id not in seen_nodes:
-                diag_lines.append(f'    {comp_id}["{c.name}"]')
+                diag_lines.append(f'    {comp_id}["{comp_label}"]')
                 seen_nodes.add(comp_id)
             for call in c.api_calls[:5]:
                 call_norm = call.strip("/").lower()
@@ -449,16 +557,22 @@ class CrawlDocGenerator:
                 if matched_ctrl:
                     ctrl_id = self._mermaid_id(matched_ctrl)
                     if ctrl_id not in seen_nodes:
-                        diag_lines.append(f'    {ctrl_id}(["{matched_ctrl}"])')
+                        diag_lines.append(
+                            f'    {ctrl_id}(["{self._mermaid_label(matched_ctrl)}"])'
+                        )
                         seen_nodes.add(ctrl_id)
-                    edges.append(f"    {comp_id} -->|{self._ascii_safe(call)[:30]}| {ctrl_id}")
+                    edge_label = self._mermaid_label(call, 24)
+                    edges.append(f"    {comp_id} -->|{edge_label}| {ctrl_id}")
                 else:
                     # Unmatched call: render as a leaf node so the user
                     # still sees the outbound dependency.
                     leaf_id = self._mermaid_id(call_norm)[:20] or "ext"
+                    leaf_id = re.sub(r"[^A-Za-z0-9_]", "_", leaf_id)
                     leaf_id = f"ext_{leaf_id}"
                     if leaf_id not in seen_nodes:
-                        diag_lines.append(f'    {leaf_id}[/"{self._ascii_safe(call)[:40]}"/]')
+                        diag_lines.append(
+                            f'    {leaf_id}[/"{self._mermaid_label(call)}"/]'
+                        )
                         seen_nodes.add(leaf_id)
                     edges.append(f"    {comp_id} --> {leaf_id}")
         diag_lines.extend(edges)
@@ -485,6 +599,341 @@ class CrawlDocGenerator:
             if len(dm.properties) > 5:
                 props += f" (+{len(dm.properties) - 5} more)"
             parts.append(f"| **{dm.name}** | {dm.db_context} | {props} | {dm.file} |")
+
+        return "\n".join(parts)
+
+    def _section_code_flow(self, report: CrawlReport) -> str:
+        """Render narrative 'Code Flow' walkthroughs for representative
+        entry points (controllers/endpoints).
+
+        Each flow follows the structure:
+          Introduction → Following the flow → Things to note
+        and embeds real code snippets pulled from the source files.
+        """
+        if not report.endpoints:
+            return ""
+
+        from pathlib import Path as _Path
+
+        # Group endpoints by controller, prefer authorized routes first
+        by_ctrl: Dict[str, List] = {}
+        for ep in report.endpoints:
+            by_ctrl.setdefault(ep.controller, []).append(ep)
+
+        # Pick up to 4 representative controllers (those with auth bubble up)
+        ranked = sorted(
+            by_ctrl.items(),
+            key=lambda kv: (
+                0 if any(e.auth_required for e in kv[1]) else 1,
+                -len(kv[1]),
+                kv[0],
+            ),
+        )[:4]
+        if not ranked:
+            return ""
+
+        # Build a quick map of consumer message types so we can call out
+        # async fan-out triggered by the controller body.
+        consumer_msgs = {c.message_type: c.consumer_class for c in report.consumers}
+
+        # Map endpoint controllers → owning business domain (if any)
+        ep_to_domain: Dict[str, str] = {}
+        for d in getattr(report, "business_domains", None) or []:
+            for ep in getattr(d, "endpoints", []) or []:
+                ep_to_domain[getattr(ep, "controller", "")] = d.name
+
+        intro = [
+            "## Code Flow",
+            "",
+            "### Introduction",
+            "",
+            "This section describes the runtime flow through the system for "
+            "the most important entry points discovered in this solution. "
+            "Each walkthrough follows a single request from the HTTP boundary "
+            "down through the layers it touches, so you can understand how "
+            "the different parts come together to create the full picture.",
+            "",
+            "The flows below were selected automatically: authenticated "
+            "endpoints and controllers with the highest endpoint count are "
+            "prioritized as they tend to represent the primary use cases.",
+        ]
+
+        flows: List[str] = []
+        for ctrl_name, eps in ranked:
+            primary = eps[0]
+            # Try to read the controller file and extract the action body
+            snippet, action_method, file_label = self._extract_action_snippet(
+                primary.file, primary.line
+            )
+
+            # Detect downstream message types referenced in the snippet
+            triggered = []
+            for msg, cons in consumer_msgs.items():
+                if msg and msg in snippet:
+                    triggered.append((msg, cons))
+
+            domain_name = ep_to_domain.get(ctrl_name, "")
+
+            flow_parts = [
+                f"### Flow: {ctrl_name}",
+                "",
+                "#### Introduction",
+                "",
+                f"This flow begins when a client issues an **{primary.method} "
+                f"`{primary.route or '/'}`** request handled by "
+                f"`{ctrl_name}`"
+                + (f" in the **{domain_name}** domain" if domain_name else "")
+                + ". "
+                + (
+                    "The endpoint is protected and requires the caller to "
+                    "be authenticated."
+                    if primary.auth_required
+                    else "The endpoint is currently unauthenticated."
+                ),
+                "",
+                "#### Following the flow",
+                "",
+                f"The entry point lives in `{file_label}`"
+                + (f" around line {primary.line}" if primary.line else "")
+                + ". The action method below is where the flow begins; from "
+                "here it dispatches to the application/services layer:",
+                "",
+                "```csharp",
+                snippet or f"// Source for {action_method or 'action'} not available",
+                "```",
+                "",
+            ]
+
+            # If the same controller exposes more endpoints, list them so the
+            # reader knows the surrounding API surface.
+            if len(eps) > 1:
+                flow_parts.append(
+                    f"`{ctrl_name}` exposes **{len(eps)}** endpoints in total. "
+                    "Other routes on the same controller follow the same "
+                    "general flow:"
+                )
+                flow_parts.append("")
+                for e in eps[:6]:
+                    flow_parts.append(
+                        f"- `{e.method} {e.route or '/'}`"
+                        + (" _(auth required)_" if e.auth_required else "")
+                    )
+                if len(eps) > 6:
+                    flow_parts.append(f"- _… +{len(eps) - 6} more_")
+                flow_parts.append("")
+
+            # Mention message-bus fan-out if we detected any
+            if triggered:
+                flow_parts.append(
+                    "The action also publishes messages onto the bus, "
+                    "which are picked up asynchronously by the following "
+                    "consumers:"
+                )
+                flow_parts.append("")
+                for msg, cons in triggered[:5]:
+                    flow_parts.append(f"- `{msg}` → handled by `{cons}`")
+                flow_parts.append("")
+
+            # Things to note ------------------------------------------------
+            notes: List[str] = []
+            if primary.auth_required:
+                notes.append(
+                    "**Authorization** is enforced at the controller level — "
+                    "any change here must preserve the `[Authorize]` "
+                    "contract or the endpoint will silently become public."
+                )
+            else:
+                notes.append(
+                    "This route is **unauthenticated**. Confirm whether "
+                    "that is intentional before exposing it on the public "
+                    "edge."
+                )
+            if triggered:
+                notes.append(
+                    "The flow is **partially asynchronous**: messages "
+                    "published from the action are processed out-of-band "
+                    "by the consumers listed above. Failures in those "
+                    "consumers will not surface in the HTTP response."
+                )
+            if domain_name:
+                notes.append(
+                    f"This flow belongs to the **{domain_name}** business "
+                    "domain. Cross-domain changes should be reviewed "
+                    "against that domain's contracts."
+                )
+            notes.append(
+                f"Typical callers: anything that talks to "
+                f"`{primary.route or '/'}` — front-end clients, partner "
+                "integrations, or internal jobs depending on the route."
+            )
+
+            flow_parts.append("#### Things to note")
+            flow_parts.append("")
+            for n in notes:
+                flow_parts.append(f"- {n}")
+            flow_parts.append("")
+
+            flows.append("\n".join(flow_parts))
+
+        return "\n".join(intro) + "\n\n" + "\n".join(flows)
+
+    def _extract_action_snippet(self, file_path: str, line: int) -> tuple:
+        """Read the source file and return (snippet, method_name, file_label).
+
+        Walks forward from `line` to find the next method declaration and
+        extracts its body using brace balancing. Falls back to a few lines
+        of context if no clean method is found.
+        """
+        from pathlib import Path as _Path
+
+        if not file_path:
+            return "", "", ""
+        p = _Path(file_path)
+        try:
+            content = p.read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:
+            logger.debug(f"_extract_action_snippet read failed for {file_path}: {e}")
+            return "", "", file_path
+
+        try:
+            file_label = str(p.relative_to(_Path.cwd()))
+        except Exception:
+            file_label = p.name
+
+        lines = content.splitlines()
+        # Compute char offset of each line
+        offsets = []
+        cur = 0
+        for ln in lines:
+            offsets.append(cur)
+            cur += len(ln) + 1
+
+        start_idx = max(0, (line or 1) - 1)
+        # Walk down from `start_idx` to find a method-like declaration
+        method_re = re.compile(
+            r"^\s*(?:public|private|protected|internal)\s+(?:async\s+)?"
+            r"(?:static\s+|virtual\s+|override\s+)?[\w<>?\[\],. ]+\s+"
+            r"(\w+)\s*\([^)]*\)"
+        )
+        for j in range(start_idx, min(start_idx + 25, len(lines))):
+            m = method_re.match(lines[j])
+            if not m:
+                continue
+            method_name = m.group(1)
+            # Find the opening brace from this line forward
+            join_pos = offsets[j] if j < len(offsets) else 0
+            tail = content[join_pos:]
+            brace = tail.find("{")
+            semi = tail.find(";")
+            if brace == -1 or (semi != -1 and semi < brace):
+                # expression-bodied or interface decl
+                snippet = "\n".join(lines[j:j + 4])
+                return snippet, method_name, file_label
+            # Walk balanced braces
+            depth = 0
+            end_off = None
+            for k in range(join_pos + brace, len(content)):
+                ch = content[k]
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end_off = k
+                        break
+            if end_off is None:
+                snippet = "\n".join(lines[j:j + 12])
+                return snippet, method_name, file_label
+            snippet = content[join_pos:end_off + 1]
+            # Cap snippet length so the doc doesn't blow up
+            if len(snippet) > 1800:
+                snippet = snippet[:1800].rstrip() + "\n    // ... truncated"
+            return snippet, method_name, file_label
+
+        # Fallback: a small window of context
+        end = min(len(lines), start_idx + 12)
+        return "\n".join(lines[start_idx:end]), "", file_label
+
+    def _section_er_diagram(self, report: CrawlReport) -> str:
+        """Render an Entity-Relationship diagram (Mermaid erDiagram) plus
+        per-entity attribute and relationship breakdown."""
+        if not report.data_models:
+            return ""
+
+        # Group entities by DbContext for clarity
+        by_ctx: Dict[str, List] = {}
+        for dm in report.data_models:
+            by_ctx.setdefault(dm.db_context or "Default", []).append(dm)
+
+        entity_names = {dm.name for dm in report.data_models}
+
+        def _safe_attr_type(t: str) -> str:
+            """Mermaid erDiagram attribute types must be alphanumeric — sanitize."""
+            t = re.sub(r"<[^>]+>", "", t)
+            t = t.replace("?", "").replace("[]", "Array").strip()
+            t = re.sub(r"[^A-Za-z0-9_]", "", t) or "string"
+            return t
+
+        parts = [
+            "## Entity-Relationship Diagram\n",
+            f"Auto-derived from **{len(report.data_models)}** EF Core entities "
+            f"across **{len(by_ctx)}** DbContext(s). Relationships are inferred "
+            "from navigation properties (`ICollection<X>`, single-entity refs) "
+            "and `<Entity>Id` foreign-key conventions.\n",
+            "```mermaid",
+            "erDiagram",
+        ]
+
+        # Emit attributes
+        for dm in report.data_models:
+            parts.append(f"    {dm.name} {{")
+            shown = 0
+            for prop in dm.properties[:15]:
+                # prop is "Type Name" or just "Name"
+                bits = prop.rsplit(" ", 1)
+                if len(bits) == 2:
+                    ptype, pname = bits
+                else:
+                    ptype, pname = "string", bits[0]
+                parts.append(f"        {_safe_attr_type(ptype)} {re.sub(r'[^A-Za-z0-9_]', '', pname)}")
+                shown += 1
+            if shown == 0:
+                parts.append("        string id")
+            parts.append("    }")
+
+        # Emit relationships (dedupe per ordered pair)
+        seen = set()
+        for dm in report.data_models:
+            for rel in dm.relationships:
+                if ":" not in rel:
+                    continue
+                kind, target = rel.split(":", 1)
+                if target not in entity_names or target == dm.name:
+                    continue
+                key = (dm.name, target, kind)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if kind == "1..*":
+                    parts.append(f'    {dm.name} ||--o{{ {target} : "has many"')
+                elif kind == "*..1":
+                    parts.append(f'    {dm.name} }}o--|| {target} : "belongs to"')
+                else:
+                    parts.append(f'    {dm.name} ||--|| {target} : "related"')
+
+        parts.append("```")
+
+        # Per-DbContext attribute breakdown table
+        for ctx, dms in by_ctx.items():
+            parts.append(f"\n### `{ctx}`\n")
+            parts.append("| Entity | Attributes | Relationships |")
+            parts.append("|--------|------------|---------------|")
+            for dm in dms:
+                attrs = ", ".join(dm.properties[:8]) or "—"
+                if len(dm.properties) > 8:
+                    attrs += f" (+{len(dm.properties) - 8} more)"
+                rels = ", ".join(dm.relationships[:6]) or "—"
+                parts.append(f"| **{dm.name}** | {attrs} | {rels} |")
 
         return "\n".join(parts)
 
@@ -864,6 +1313,26 @@ class CrawlDocGenerator:
             .replace("/", "_")
             .replace("\\", "_")
         )
+
+    @staticmethod
+    def _mermaid_label(text: str, max_len: int = 40) -> str:
+        """Sanitize a string for use inside a Mermaid node label.
+
+        Mermaid's parser breaks on `"`, `<`, `>`, parentheses, brackets,
+        braces, pipes and backslashes inside the label payload — even
+        when wrapped in quoted forms like `[" ... "]`. We strip them
+        defensively so kroki + streamlit-mermaid both render the diagram.
+        """
+        if not text:
+            return ""
+        s = str(text)
+        # Replace characters Mermaid treats as syntax inside node labels
+        for ch in '"<>()[]{}|\\`':
+            s = s.replace(ch, " ")
+        s = " ".join(s.split())  # collapse whitespace
+        if len(s) > max_len:
+            s = s[: max_len - 1] + "…"
+        return s
 
     def _section_dependency_graph(self, report: CrawlReport) -> str:
         # Pull nodes from the crawler's dependency_graph if present, otherwise

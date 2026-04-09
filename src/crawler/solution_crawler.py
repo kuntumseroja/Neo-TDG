@@ -50,6 +50,16 @@ _DBCONTEXT_PATTERN = re.compile(
 _DBSET_PATTERN = re.compile(
     r"DbSet<(\w+)>\s+(\w+)", re.MULTILINE
 )
+# Property declarations inside an entity class:
+#   public virtual ICollection<Order> Orders { get; set; }
+#   public string Name { get; set; }
+_ENTITY_PROP_PATTERN = re.compile(
+    r"public\s+(?:virtual\s+)?([\w<>?\[\],. ]+?)\s+(\w+)\s*\{\s*get\s*;",
+    re.MULTILINE,
+)
+_ENTITY_CLASS_PATTERN = re.compile(
+    r"\bclass\s+(\w+)\s*(?::\s*[\w<>, ]+)?\s*\{",
+)
 _SAGA_PATTERN = re.compile(
     r"class\s+(\w+)\s*:\s*.*?(?:MassTransitStateMachine|Saga)<(\w+)>", re.MULTILINE
 )
@@ -150,6 +160,10 @@ class SolutionCrawler:
                 report.integrations.extend(discover_integrations(content, str(cs_file)))
             except Exception as e:
                 logger.warning(f"Error in discovery for {cs_file}: {e}")
+
+        # Enrich data models with properties and relationships for ER diagram
+        if report.data_models:
+            self._enrich_data_models(report, all_cs_files)
 
         # Build dependency graph
         report.dependency_graph = self._build_dependency_graph(report.projects)
@@ -337,6 +351,81 @@ class SolutionCrawler:
                 properties=[prop_name],
                 file=file_path,
             ))
+
+    def _enrich_data_models(self, report: CrawlReport, all_cs_files: List[Path]):
+        """Walk entity class files to populate properties and relationships.
+
+        For each `DataModel` already discovered (via `DbSet<X>`), find a
+        `class X` definition in any .cs file and extract its public
+        get/set properties. Properties whose declared type matches another
+        known entity (or `ICollection<EntityName>`) are recorded as
+        relationships so the ER diagram can render edges between them.
+        """
+        entity_names = {dm.name for dm in report.data_models}
+        # name -> first class body found
+        bodies: Dict[str, str] = {}
+        for cs_file in all_cs_files:
+            try:
+                content = cs_file.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            for cls_match in _ENTITY_CLASS_PATTERN.finditer(content):
+                cname = cls_match.group(1)
+                if cname not in entity_names or cname in bodies:
+                    continue
+                # Walk braces from the opening { to find the class body
+                start = cls_match.end() - 1  # position of '{'
+                depth = 0
+                end = None
+                for j in range(start, len(content)):
+                    ch = content[j]
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = j
+                            break
+                if end is None:
+                    continue
+                bodies[cname] = content[start + 1:end]
+
+        for dm in report.data_models:
+            body = bodies.get(dm.name)
+            if not body:
+                continue
+            props: List[str] = []
+            rels: List[str] = []
+            for prop_match in _ENTITY_PROP_PATTERN.finditer(body):
+                ptype = prop_match.group(1).strip()
+                pname = prop_match.group(2).strip()
+                # Skip noise / nav-only modifiers
+                ptype_clean = ptype.replace("virtual", "").strip()
+                props.append(f"{ptype_clean} {pname}")
+
+                # Detect navigation properties → relationships
+                # ICollection<X>, List<X>, IEnumerable<X>
+                col_match = re.match(
+                    r"(?:ICollection|List|IEnumerable|HashSet)<(\w+)>",
+                    ptype_clean,
+                )
+                if col_match:
+                    target = col_match.group(1)
+                    if target in entity_names:
+                        rels.append(f"1..*:{target}")
+                    continue
+                # Single navigation: type matches another entity name
+                if ptype_clean in entity_names and ptype_clean != dm.name:
+                    rels.append(f"*..1:{ptype_clean}")
+                    continue
+                # Foreign key column convention: FooId
+                if pname.endswith("Id") and pname != "Id":
+                    fk_target = pname[:-2]
+                    if fk_target in entity_names and fk_target != dm.name:
+                        rels.append(f"*..1:{fk_target}")
+            # Replace the bare DbSet property name with the rich property list
+            dm.properties = props or dm.properties
+            dm.relationships = rels
 
     @staticmethod
     def _build_dependency_graph(projects: List[ProjectInfo]) -> dict:

@@ -144,20 +144,128 @@ def _is_skipped_dir(path: Path) -> bool:
 # ── Generator ─────────────────────────────────────────────────────────────
 
 
+def _extract_balanced_block(content: str, brace_pos: int) -> str:
+    """Given the index of an opening `{`, return the substring up to (but
+    excluding) the matching closing `}`. Returns "" on imbalance."""
+    depth = 0
+    for j in range(brace_pos, len(content)):
+        ch = content[j]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return content[brace_pos + 1:j]
+    return ""
+
+
+def _heuristic_explain(body: str, sig: str) -> str:
+    """Return a 1-2 sentence plain-English description of a method body
+    derived from simple syntactic cues. Designed to work without an LLM."""
+    if not body or not body.strip():
+        if "=>" in sig or "{ get" in sig or "{ set" in sig:
+            return "Property accessor."
+        return ""
+
+    notes: List[str] = []
+    is_async = "await " in body or "async " in sig
+    throws = re.findall(r"throw\s+new\s+(\w+)", body)
+    returns = re.findall(r"\breturn\b\s*([^;]*);", body)
+    has_if = bool(re.search(r"\bif\s*\(", body))
+    has_loop = bool(re.search(r"\b(foreach|for|while)\s*\(", body))
+    has_switch = bool(re.search(r"\bswitch\s*\(", body))
+    # Captured method invocations (best-effort)
+    calls = re.findall(r"(?<![\w.])([A-Z][A-Za-z0-9_]*)\s*\(", body)
+    # Drop control keywords that match the pattern
+    skip = {"If", "For", "Foreach", "While", "Switch", "Return", "Throw", "Using", "Lock", "New"}
+    calls = [c for c in calls if c not in skip]
+    distinct_calls = []
+    for c in calls:
+        if c not in distinct_calls:
+            distinct_calls.append(c)
+        if len(distinct_calls) >= 4:
+            break
+
+    verb = "Asynchronously executes" if is_async else "Executes"
+    notes.append(f"{verb} the operation")
+
+    if distinct_calls:
+        notes.append(f"calling {', '.join('`' + c + '`' for c in distinct_calls)}")
+
+    flow_bits = []
+    if has_if:
+        flow_bits.append("conditional branches")
+    if has_loop:
+        flow_bits.append("iteration")
+    if has_switch:
+        flow_bits.append("switch dispatch")
+    if flow_bits:
+        notes.append("with " + " and ".join(flow_bits))
+
+    if throws:
+        notes.append(f"raising `{throws[0]}` on failure")
+
+    if returns and returns[0].strip():
+        ret = returns[0].strip()
+        if len(ret) <= 60:
+            notes.append(f"returning `{ret}`")
+        else:
+            notes.append("returning a computed value")
+
+    text = ", ".join(notes) + "."
+    return text[0].upper() + text[1:]
+
+
 class CodeDocGenerator:
     """Render Doxygen-style per-symbol code docs from a `CrawlReport`."""
 
-    def __init__(self, max_files_per_project: int = 200):
+    def __init__(self, max_files_per_project: int = 200, llm=None, max_llm_calls: int = 60):
         self.max_files_per_project = max_files_per_project
+        self.llm = llm
+        self.max_llm_calls = max_llm_calls
+        self._llm_calls_used = 0
+
+    def _explain_method(self, body: str, sig: str, type_name: str) -> str:
+        """Return a short prose explanation. Uses LLM when available, else
+        falls back to a heuristic derived from the method body."""
+        heuristic = _heuristic_explain(body, sig)
+        if not self.llm or not body.strip() or len(body) < 20:
+            return heuristic
+        if self._llm_calls_used >= self.max_llm_calls:
+            return heuristic
+        self._llm_calls_used += 1
+        try:
+            snippet = body if len(body) <= 1500 else body[:1500] + "\n// ... truncated"
+            prompt = (
+                "You are documenting a C# method for a developer reference. "
+                "Given the signature and body, write ONE concise sentence "
+                "(max 25 words) describing what the method does. Do not "
+                "restate the name. Do not include any preamble.\n\n"
+                f"Type: {type_name}\nSignature: {sig}\n\nBody:\n{snippet}"
+            )
+            out = self.llm.generate(
+                prompt,
+                system_prompt="You write extremely concise C# method descriptions.",
+            )
+            text = (out or "").strip().split("\n")[0].strip(" .") + "."
+            if 5 < len(text) < 300:
+                return text
+        except Exception as e:
+            logger.debug(f"LLM explain failed, using heuristic: {e}")
+        return heuristic
 
     # Public entry points -------------------------------------------------
 
     def generate_markdown(self, report: CrawlReport) -> str:
         """Build the full code-documentation markdown."""
         sln_name = report.solution.replace("\\", "/").split("/")[-1]
+        from src import __version__ as lumen_version
+        from src.crawler.doc_generator import _describe_llm
+        from datetime import datetime
         parts: List[str] = [
             f"# {sln_name} - Code Documentation\n",
-            f"> Auto-generated by Lumen.AI Code Documentation Generator\n",
+            f"> Generated by **Lumen.AI Code Documentation Generator** v{lumen_version} using `{_describe_llm(self.llm)}`\n",
+            f"> Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
             "> Doxygen-style per-symbol API reference for every C# and "
             "Angular/TypeScript file discovered in this solution.",
         ]
@@ -259,7 +367,13 @@ class CodeDocGenerator:
         # Two-pass: walk lines, identify each declaration line by its
         # leading modifier, then look upward for any contiguous /// block.
         lines = content.splitlines()
-        type_entries: List[Tuple[str, str, str, List[Tuple[str, str]]]] = []
+        # Precompute char offset of each line in `content` for body extraction.
+        line_offsets: List[int] = []
+        off = 0
+        for ln in lines:
+            line_offsets.append(off)
+            off += len(ln) + 1  # +1 for the newline we split on
+        type_entries: List[Tuple[str, str, str, List[Tuple[str, str, str]]]] = []
         current_type: Optional[List] = None  # [kind, name, summary, members]
 
         for i, raw_line in enumerate(lines):
@@ -281,12 +395,33 @@ class CodeDocGenerator:
             # Member of the current type.
             if current_type is None:
                 continue
-            if not _CS_METHOD_OR_PROP.search(decl_line):
+            mp_match = _CS_METHOD_OR_PROP.search(decl_line)
+            if not mp_match:
                 continue
             sig = _trim_signature(decl_line)
             if not sig or len(sig) > 220:
                 continue
-            current_type[3].append((sig, _strip_xml_doc(doc_block)))
+
+            # Capture the method body for explanation generation. We
+            # locate the first '{' on this or subsequent lines (or skip
+            # for `=>` expression-bodied members / properties).
+            body_text = ""
+            is_method = bool(mp_match.group(3) and mp_match.group(3).startswith("("))
+            if is_method:
+                # Search forward in the joined source for the opening brace
+                # of THIS method, ignoring expression-bodied / interface
+                # declarations (which terminate with `;`).
+                join_start = line_offsets[i] if i < len(line_offsets) else 0
+                rest = content[join_start:]
+                # Find the first { or ; on the signature line(s)
+                semi = rest.find(";")
+                brace = rest.find("{")
+                if brace != -1 and (semi == -1 or brace < semi):
+                    body_text = _extract_balanced_block(content, join_start + brace)
+
+            summary = _strip_xml_doc(doc_block)
+            explanation = self._explain_method(body_text, sig, current_type[1])
+            current_type[3].append((sig, summary, explanation))
 
         if current_type is not None:
             type_entries.append(tuple(current_type))  # type: ignore
@@ -308,14 +443,15 @@ class CodeDocGenerator:
                 lines.append(f"> {summary}")
             if members:
                 lines.append("")
-                lines.append("| Member | Summary |")
-                lines.append("|--------|---------|")
-                for sig, msum in members[:40]:
+                lines.append("| Member | Doc Summary | Explanation |")
+                lines.append("|--------|-------------|-------------|")
+                for sig, msum, expl in members[:40]:
                     sig_clean = sig.replace("|", "\\|")
                     msum_clean = (msum or "—").replace("|", "\\|")
-                    lines.append(f"| `{sig_clean}` | {msum_clean} |")
+                    expl_clean = (expl or "—").replace("|", "\\|").replace("\n", " ")
+                    lines.append(f"| `{sig_clean}` | {msum_clean} | {expl_clean} |")
                 if len(members) > 40:
-                    lines.append(f"| _… +{len(members) - 40} more …_ | |")
+                    lines.append(f"| _… +{len(members) - 40} more …_ | | |")
 
         return "\n".join(lines), len(type_entries)
 
