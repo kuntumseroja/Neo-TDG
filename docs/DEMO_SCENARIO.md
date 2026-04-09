@@ -4,6 +4,10 @@
 > RAG-Powered Technical Documentation & Code Intelligence
 >
 > _Formerly Neo-TDG. The brand changed; the engine got deeper._
+>
+> **Version:** 1.2
+> **Last Updated:** 09 April 2026
+> **Latest changes:** Code Documentation generator, function explanations, Entity-Relationship diagram, Code Flow narrative walkthroughs, kroki-backed PNG rendering for every Mermaid block in PDF, inline preview expanders for both reports, Mermaid label sanitization, and PDF/MD upload tab in the Knowledge Store. See the [Changelog (v1.2)](#changelog-v12) at the bottom of this document for the full list.
 
 ---
 
@@ -217,33 +221,45 @@ Below the source tabs there is also an **Angular front-end path (optional)** fie
 ## 5. Demo Scenario 3: Document Generation & Download
 
 ### Objective
-Show automatic documentation generation in Markdown and PDF formats with download capability. The generated doc covers **everything** the crawler discovered: back-end projects, deep code/config analysis, business domains, sequence flows, and the Angular front-end with its UI→API wiring.
+Show automatic documentation generation in Markdown and PDF formats with download capability **and** in-app preview before download. Two distinct documents are produced from the same crawl:
+
+1. **Technical Documentation** — solution-wide architecture report covering back-end projects, deep code/config analysis, business domains, sequence flows, runtime code-flow walkthroughs, an Entity-Relationship diagram, and the Angular front-end with its UI→API wiring.
+2. **Code Documentation** — Doxygen-style per-symbol API reference for every C# and Angular/TypeScript file in the solution, with auto-generated function explanations.
+
+Every Mermaid diagram in both PDFs is rendered as a real PNG image (via [kroki.io](https://kroki.io)) — no more raw `graph LR` text in the printout.
 
 ### Steps
 
 | Step | Action | Expected Result |
 |------|--------|-----------------|
 | 1 | After crawl completes, scroll to the download section | Two buttons appear: "Download MD Report" and "Download PDF Report" |
-| 2 | Click "Download MD Report" | Browser downloads `CoreTaxSample_report.md` |
-| 3 | Open the MD file | Full technical documentation with tables, architecture diagram, dependency graph (with contract overlay), per-domain sequence diagrams, configurations, DI registrations, code symbols, and the Angular UI section |
-| 4 | Click "Download PDF Report" | Browser downloads `CoreTaxSample_report.pdf` |
-| 5 | Open the PDF file | Same content rendered as a print-ready PDF — headings, tables, code blocks, all unicode arrows and em-dashes safely transliterated |
+| 2 | Expand "Preview Technical Documentation" | Inline preview renders the full report with mermaid diagrams (architecture, dependency graph, sequence flows, ER diagram, UI→API wiring) shown as actual diagrams via `streamlit-mermaid` |
+| 3 | Click "Download MD Report" | Browser downloads `CoreTaxSample_report_MM-DD-YYYY.md` |
+| 4 | Click "Download PDF Report" | Browser downloads `CoreTaxSample_report_MM-DD-YYYY.pdf` |
+| 5 | Open the PDF | Headings, tables, and **rendered mermaid PNGs** for every diagram (kroki-backed); unicode arrows/em-dashes safely transliterated |
+| 6 | Scroll to **Code Documentation** subsection | Click "Generate Code Documentation" |
+| 7 | Wait for generation | Spinner runs; success message reports character count |
+| 8 | Expand "Preview Code Documentation" | Per-project → per-file → per-type member tables with **Member / Doc Summary / Explanation** columns |
+| 9 | Click "Download Code Doc (MD)" / "Download Code Doc (PDF)" | Filenames include project name and `MM-DD-YYYY` timestamp |
+| 10 | (Optional) Click "Ingest Code Documentation to Knowledge Store" | Per-symbol reference becomes queryable from RAG chat |
 
 ### Narration Script
 
-> "One of the key features is automatic documentation generation. After every crawl, Lumen.AI generates comprehensive technical documentation in both Markdown and PDF.
+> "After every crawl, Lumen.AI generates **two** complementary documents — a solution-wide technical report and a Doxygen-style code reference — and you can preview both in-page before downloading.
 >
-> What you get is not just a list of files. The doc opens with a Solution Overview metrics table, then walks through the discovered Business Domains, the Cross-Domain Contracts that connect them, and a per-domain Sequence Flow diagram showing how Client → Controller → external services → message bus → consumers actually interact at runtime. Synchronous calls render as solid arrows; rabbitmq/kafka/queue calls render as dashed arrows.
+> The Technical Documentation opens with a Solution Overview metrics table, then walks through the discovered Business Domains, the Cross-Domain Contracts that connect them, and a per-domain Sequence Flow diagram showing how Client → Controller → external services → message bus → consumers actually interact at runtime.
 >
-> Then it covers the back-end internals: every project with framework and NuGet packages, all configuration keys extracted from `appsettings.*.json` and `launchSettings.json`, every DI registration discovered in `Startup.cs`/`Program.cs`, and every C# code symbol classified into DDD roles -- aggregate roots, domain events, value objects, repositories, controllers.
+> Next is a brand-new **Code Flow** section: for the most important entry points (authenticated controllers first), Lumen.AI extracts the actual action method body from the source file and walks you through it like a tech doc — Introduction, Following the flow with the real C# snippet, and Things to note covering authorization, async fan-out, and typical callers. It's the kind of context a senior engineer would normally write by hand.
 >
-> Endpoints, consumers, schedulers, integrations, and data models are all there. Then comes the Angular Front-End section -- a per-module table of components with their selectors, routes, API calls, and source files, plus a UI → API Wiring Mermaid diagram that connects each component to the back-end Controller it calls. The doc closes with the Dependency Graph: a layered Mermaid view of project references with cross-domain runtime contracts overlaid as dotted edges, plus a textual edge table.
+> Then it covers back-end internals: every project, configuration keys, DI registrations, DDD code symbols, endpoints, consumers, schedulers, integrations, data models. The **Entity-Relationship Diagram** is auto-derived from EF Core entities — Lumen.AI walks each entity class for its properties and infers relationships from `ICollection<X>` navigation props and `<Entity>Id` foreign-key conventions, then renders an `erDiagram` grouped by DbContext.
 >
-> The PDF version provides the same content in a print-ready format -- suitable for sharing with stakeholders who prefer traditional documents. Em-dashes, arrows, and other unicode characters are safely transliterated so the PDF generator never chokes.
+> The Angular Front-End section follows: a per-module table of components plus a UI → API Wiring diagram connecting each component to the Controller it calls. The doc closes with the layered Dependency Graph.
 >
-> This eliminates hours of manual documentation work. Every time you crawl a solution, the docs are instantly up to date."
+> In the PDF, **every mermaid block is rendered as a real diagram** — not source code. We pipe the Mermaid source through kroki.io, get back a PNG, and embed it page-break aware.
+>
+> Then there's the second document: **Code Documentation**. This is the Doxygen-style API reference. For every C# type it lists members with three columns: the signature, the doc-comment summary if one exists, and a heuristic-or-LLM-generated **Explanation** that summarizes what the method actually does — async/throws/branches/calls/returns. Angular/TypeScript classes, services, and components are documented the same way."
 
-### MD/PDF Report Structure
+### MD/PDF Report Structure (Technical Documentation)
 
 The generated report includes these sections (in order):
 
@@ -252,18 +268,32 @@ The generated report includes these sections (in order):
 3. **Business Domains** -- Per-domain card: projects, namespaces, aggregates, domain events, endpoints
 4. **Domain Contracts** -- Cross-service contracts joined from DI registrations + configuration URLs (source domain → target service, transport, interface, config URL, registration site)
 5. **Sequence Flows** -- One Mermaid `sequenceDiagram` per business domain showing Client → Controllers → external services → Bus/Consumers; solid arrows for sync, dashed for async transports
-6. **Architecture Diagram** -- Mermaid `graph TD` grouping projects by layer
-7. **Project Details** -- Each project with layer, framework, path, references, NuGet packages
-8. **Configurations** -- Every key extracted from `appsettings.json` / `appsettings.{env}.json` / `launchSettings.json` / `*.config`, including environment-variable references
-9. **DI Registrations** -- Every `AddSingleton`/`AddScoped`/`AddTransient`/`AddHttpClient`/`AddDbContext`/`AddMediatR` call site with service type, implementation, named client, file:line
-10. **Code Symbols** -- C# classes/interfaces/records with DDD roles flagged: aggregate roots, domain events, value objects, repositories, controllers
-11. **API Endpoints** -- Table with method, route, controller, auth status
-12. **Message Consumers** -- Consumer class, message type, queue
-13. **Scheduled Jobs** -- Job name, schedule/cron, description
-14. **Integration Points** -- Grouped by type with source, target, contract
-15. **Data Models** -- Entity name, DbContext, properties
-16. **Angular Front-End** -- Per-module table of components (selector, routes, API calls, file) plus a `UI → API Wiring` Mermaid `graph LR` connecting each component to the back-end Controller it hits (suffix-matched against discovered endpoint routes; unmatched calls render as external leaves)
-17. **Dependency Graph** -- Mermaid `graph LR` with layer subgraphs, project references as solid arrows, cross-domain contracts as dotted arrows with transport labels, plus a textual edge table
+6. **Code Flow** -- Narrative walkthroughs (Introduction → Following the flow → Things to note) for the top entry points; embeds the real action method body from source, detects message-bus fan-out by matching message types referenced in the body
+7. **Architecture Diagram** -- Mermaid `graph TD` grouping projects by layer
+8. **Project Details** -- Each project with layer, framework, path, references, NuGet packages
+9. **Configurations** -- Every key extracted from `appsettings.json` / `appsettings.{env}.json` / `launchSettings.json` / `*.config`, including environment-variable references
+10. **DI Registrations** -- Every `AddSingleton`/`AddScoped`/`AddTransient`/`AddHttpClient`/`AddDbContext`/`AddMediatR` call site with service type, implementation, named client, file:line
+11. **Code Symbols** -- C# classes/interfaces/records with DDD roles flagged: aggregate roots, domain events, value objects, repositories, controllers
+12. **API Endpoints** -- Table with method, route, controller, auth status
+13. **Message Consumers** -- Consumer class, message type, queue
+14. **Scheduled Jobs** -- Job name, schedule/cron, description
+15. **Integration Points** -- Grouped by type with source, target, contract
+16. **Data Models** -- Entity name, DbContext, properties
+17. **Entity-Relationship Diagram** -- Mermaid `erDiagram` of all EF Core entities grouped by DbContext, with attributes pulled from class properties and relationships inferred from `ICollection<X>` navigation props + `<Entity>Id` FK conventions; followed by a per-DbContext attribute/relationship table
+18. **Angular Front-End** -- Per-module table of components (selector, routes, API calls, file) plus a `UI → API Wiring` Mermaid `graph LR` connecting each component to the back-end Controller it hits (Mermaid-safe label sanitization keeps `>`/`(`/`)` from breaking the parser)
+19. **Dependency Graph** -- Mermaid `graph LR` with layer subgraphs, project references as solid arrows, cross-domain contracts as dotted arrows with transport labels, plus a textual edge table
+
+### Code Documentation Structure
+
+Generated by clicking **Generate Code Documentation** (separate from the technical report). Built by `CodeDocGenerator` walking the same `CrawlReport`:
+
+1. **Title** -- `<Solution> - Code Documentation`
+2. **C# Source Documentation** -- For each project: per-file subsection with namespace and a per-type table:
+   - `class` / `interface` / `record` / `struct` / `enum` declaration with `<summary>` text
+   - **Member table**: `Member` (signature) | `Doc Summary` (from `///` XML doc) | **Explanation** (heuristic or LLM-generated description of what the method actually does — async, throws, branches, calls, returns)
+3. **Angular / TypeScript Source Documentation** -- Walks every `.ts` under each Angular root: per-folder subsection with a table of `Kind | Name | Decorator | Summary` for every JSDoc'd class/interface/function/const/enum (excluding `*.spec.ts` / `*.d.ts`)
+
+The Code Documentation can also be **ingested directly into the Knowledge Store** via a dedicated button so RAG chat can answer questions like "what does `OrderService.SubmitAsync` do" without crawling source files at query time.
 
 ---
 
@@ -396,6 +426,17 @@ Demonstrate visual flow tracing and component explanation capabilities.
 | 5 | Observe Sequence Diagram | Mermaid sequence diagram shows interactions between Controller, Handler, Domain, Repository, EventBus, Consumer |
 | 6 | Observe Step-by-Step breakdown | Each step shows: icon, component, action, file reference |
 
+**Example entry points to try** (any of these work — copy/paste straight into the field):
+
+| Entry Point | What it traces |
+|-------------|----------------|
+| `POST /api/v1/invoices/submit` | VAT invoice submission flow: `InvoiceController` → `SubmitInvoiceCommandHandler` → `InvoiceRepository` → `InvoiceSubmittedEvent` → `InvoiceSubmittedConsumer` |
+| `POST /api/v1/registration` | Taxpayer onboarding: `RegistrationController` → KYC validation → NPWP allocation → `TaxpayerRegisteredEvent` → `NotificationService` |
+| `POST /api/v1/payments/confirm` | Bank payment reconciliation: `PaymentController` → `PaymentService` → billing-code lookup → `PaymentReceivedEvent` → `ComplianceService` + `AuditService` |
+| `GET /api/v1/taxpayers/{npwp}/obligations` | Read-side obligation aggregation across `FilingService` and `BillingService` |
+| `InvoiceSubmittedConsumer` | Reverse trace from a consumer back to the publisher and surrounding handlers |
+| `SubmitInvoiceCommandHandler` | MediatR handler tracing — the AI walks the dependency graph from the handler outwards |
+
 ### Sub-Scenario 6B: Explain Component
 
 | Step | Action | Expected Result |
@@ -405,6 +446,19 @@ Demonstrate visual flow tracing and component explanation capabilities.
 | 3 | Select Explain Type: "Class" | Class explanation mode selected |
 | 4 | Click "Explain" | AI generates class explanation |
 | 5 | Observe output | Shows: purpose, constructor dependencies, domain events, business rules, dependency list |
+
+**Example file paths to try** (relative to the crawled solution root — the Flow Explorer also accepts absolute paths):
+
+| File Path | Why it's a good demo |
+|-----------|----------------------|
+| `src/CoreTax.Filing.Application/Invoices/Commands/SubmitInvoiceCommandHandler.cs` | Classic CQRS handler with repository, validator and event publisher dependencies |
+| `src/CoreTax.Registration.Application/Taxpayers/Commands/RegisterTaxpayerCommandHandler.cs` | Shows KYC integration + outbox pattern + domain event raising |
+| `src/CoreTax.Filing.Domain/Aggregates/Invoice.cs` | Aggregate root — explainer surfaces invariants, factory methods, domain events |
+| `src/CoreTax.Billing.Infrastructure/Consumers/InvoiceSubmittedConsumer.cs` | MassTransit consumer — explainer shows message contract + downstream calls |
+| `src/CoreTax.Payment.Presentation/Controllers/PaymentController.cs` | Controller — explainer lists every endpoint, auth attributes, request/response DTOs |
+| `src/CoreTax.Compliance.Application/Scoring/ComplianceScoringService.cs` | Service with multiple repository dependencies — good for showing the dependency list view |
+
+> Tip: any file path emitted by the Solution Crawler in the `Endpoints` / `Code Symbols` / `Consumers` tabs can be copy-pasted directly into the Explain Component input. The path stored in the crawl report is exactly what the explainer expects.
 
 ### Sub-Scenario 6C: Validation Rules
 
@@ -607,9 +661,14 @@ Demonstrate the complete workflow from crawl to AI-powered analysis.
 | Business Domain Clustering | Generated Doc | Group projects + namespaces into bounded contexts | Discover the de-facto domain map |
 | Cross-Domain Contracts | Generated Doc | Join named HTTP clients with config URLs | Surface every runtime cross-service dependency |
 | Sequence Flow Diagrams | Generated Doc | Per-domain Mermaid sequenceDiagram of Client → Controllers → services → Bus → Consumers | Understand runtime interactions at a glance |
+| Code Flow Walkthroughs | Generated Doc | Narrative `Introduction → Following the flow → Things to note` for top entry points, embedding the real action method body | Onboarding context normally written by hand |
+| Entity-Relationship Diagram | Generated Doc | Auto-derived `erDiagram` from EF Core entities with attributes + nav-prop relationships, grouped by DbContext | Visual data model without an external ER tool |
 | Dependency Graph | Generated Doc | Layered Mermaid graph of references with contract overlay | See architecture at a glance |
+| Code Documentation Generator | Solution Crawler > Code Documentation | Doxygen-style per-symbol API reference for C# + Angular/TypeScript with auto-generated function explanations | Per-method API docs without writing them |
+| Function Explanations | Code Documentation | Heuristic-or-LLM column describing what each method does (async, throws, branches, calls, returns) | Skim a class without reading bodies |
 | MD Report Generation | Solution Crawler | Auto-generate Markdown documentation | Instant technical docs |
-| PDF Report Generation | Solution Crawler | Auto-generate PDF documentation (unicode-safe) | Shareable formatted reports |
+| PDF Report Generation | Solution Crawler | Auto-generate PDF with **mermaid diagrams rendered as real PNGs** via kroki.io | Shareable formatted reports with actual visuals |
+| Inline Doc Preview | Solution Crawler | Expander preview for both Technical & Code documentation, with mermaid rendered live by `streamlit-mermaid` | Verify before downloading |
 | Knowledge Ingestion | Knowledge Store | Index crawl data into vector store | Enable AI-powered queries |
 | Document Ingestion | Knowledge Store | Import markdown files and directories | Enrich knowledge base |
 | RAG Chat - Explain | RAG Chat | AI explains code with architecture context | Deep code understanding |
@@ -714,8 +773,20 @@ CoreTaxSample.sln
 
 ---
 
-*Document generated for Lumen.AI Demo v1.1*
+*Document generated for Lumen.AI Demo v1.2*
 *Prepared for DJP CoreTax Development Team*
+*Last updated: 09 April 2026*
+
+### Changelog (v1.2)
+
+- **Code Documentation generator** — new Doxygen-style per-symbol API reference for every C# and Angular/TypeScript file in the solution; downloadable as MD/PDF and ingestible into the Knowledge Store
+- **Function explanations** — Code Documentation member tables now have a third column with a heuristic-or-LLM-generated description of what each method actually does (async, throws, branches, calls, returns); LLM is used opportunistically when `st.session_state.llm` is available, with a 60-call budget per generation
+- **Entity-Relationship Diagram** — solution doc now contains an `erDiagram` derived from EF Core entities; properties extracted from class definitions, relationships inferred from `ICollection<X>` navigation props and `<Entity>Id` FK conventions, grouped by DbContext
+- **Code Flow narrative section** — for the top entry points (auth-protected first), the doc embeds the actual action method body from source and walks through it as `Introduction → Following the flow → Things to note`, auto-detecting message-bus fan-out
+- **Mermaid diagrams render as real images in PDF** — every mermaid block is now piped through kroki.io and embedded as a PNG (page-break aware, cached per source). Falls back to a code block if kroki is unreachable
+- **Inline preview expanders** — both reports get a "Preview …" expander above their download buttons, rendering markdown with mermaid diagrams via `streamlit-mermaid` (auto-scaling height based on diagram size, capped at 1400 px)
+- **Mermaid label sanitization** — node and edge labels strip Mermaid-significant characters (`<>()[]{}|\\\"`) so generated diagrams from real-world Angular `api_calls` (e.g. `TaxResponse>(`) don't break the parser
+- **MM-DD-YYYY timestamps** in every download filename for both technical and code documentation
 
 ### Changelog (v1.1)
 
