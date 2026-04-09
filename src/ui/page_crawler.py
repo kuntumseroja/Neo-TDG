@@ -8,9 +8,12 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
+import hashlib
+
 import streamlit as st
 from src.ui.components import render_mermaid, render_carbon_tag
 from src.crawler.doc_generator import CrawlDocGenerator
+from src.crawler.code_doc_generator import CodeDocGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +235,98 @@ def render_solution_crawler():
                     file_name=f"{file_prefix}_report.pdf",
                     mime="application/pdf",
                 )
+
+    # ── Code Documentation Generator ──────────────────────────────
+    # Doxygen-style per-symbol API reference for every C# and
+    # Angular/TypeScript file in the crawled solution. Builds on top of
+    # the most recent crawl report so it inherits whatever the user just
+    # discovered (local path / ZIP upload / GitHub clone).
+    if st.session_state.get("last_crawl_report"):
+        st.divider()
+        st.subheader("Code Documentation")
+        st.caption(
+            "Generate Doxygen-style per-symbol API documentation from the C# "
+            "and Angular/TypeScript source files discovered above. The "
+            "result can be downloaded as MD/PDF and ingested into the RAG "
+            "knowledge store."
+        )
+        cd_col1, cd_col2 = st.columns(2)
+        with cd_col1:
+            if st.button("Generate Code Documentation", type="primary"):
+                with st.spinner("Walking source files and extracting symbols..."):
+                    try:
+                        cdg = CodeDocGenerator()
+                        cd_md = cdg.generate_markdown(st.session_state.last_crawl_report)
+                        st.session_state.code_doc_md = cd_md
+                        try:
+                            cd_pdf = cdg.generate_pdf(cd_md)
+                            st.session_state.code_doc_pdf = bytes(cd_pdf)
+                        except Exception as pdf_err:
+                            logger.warning(f"Code-doc PDF generation failed: {pdf_err}")
+                            st.session_state.code_doc_pdf = None
+                        st.success(
+                            f"Generated {len(cd_md):,} characters of code documentation."
+                        )
+                    except Exception as e:
+                        st.error(f"Code documentation generation failed: {e}")
+                        logger.exception("Code-doc generation crashed")
+        with cd_col2:
+            if st.button(
+                "Ingest Code Docs to Knowledge Store",
+                disabled=not st.session_state.get("code_doc_md"),
+            ):
+                if pipeline and st.session_state.get("code_doc_md"):
+                    with st.spinner("Ingesting code documentation into RAG store..."):
+                        try:
+                            sln_label = st.session_state.last_crawl_report.solution
+                            doc_id = "codedoc_" + hashlib.md5(
+                                sln_label.encode("utf-8")
+                            ).hexdigest()
+                            chunks = pipeline.store.ingest_document(
+                                st.session_state.code_doc_md,
+                                {
+                                    "source_file": f"{sln_label}_code_doc.md",
+                                    "doc_kind": "code_documentation",
+                                    "service_name": sln_label.replace(".sln", ""),
+                                },
+                                doc_id,
+                            )
+                            st.success(
+                                f"Ingested code documentation: {chunks} chunks created."
+                            )
+                        except Exception as e:
+                            st.error(f"Ingest failed: {e}")
+                            logger.exception("Code-doc ingest crashed")
+
+        cd_md = st.session_state.get("code_doc_md")
+        cd_pdf = st.session_state.get("code_doc_pdf")
+        if cd_md or cd_pdf:
+            cd_dl1, cd_dl2, _cd_sp = st.columns([1, 1, 2])
+            sln_obj = st.session_state.get("last_crawl_report")
+            cd_prefix = "code_doc"
+            if sln_obj:
+                cd_prefix = (
+                    sln_obj.solution.replace("\\", "/").split("/")[-1].replace(".sln", "")
+                    + "_code_doc"
+                )
+            with cd_dl1:
+                if cd_md:
+                    st.download_button(
+                        label="Download Code Doc (MD)",
+                        data=cd_md,
+                        file_name=f"{cd_prefix}.md",
+                        mime="text/markdown",
+                        key="dl_code_doc_md",
+                    )
+            with cd_dl2:
+                if cd_pdf:
+                    st.download_button(
+                        label="Download Code Doc (PDF)",
+                        data=cd_pdf,
+                        file_name=f"{cd_prefix}.pdf",
+                        mime="application/pdf",
+                        key="dl_code_doc_pdf",
+                    )
 
     # Display results
     report = st.session_state.get("last_crawl_report")
