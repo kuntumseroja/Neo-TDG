@@ -327,8 +327,129 @@ class DocumentIngestionPipeline:
                 doc_id,
             )
 
+        # Deep-analysis chunks (only present when crawler.deep_analysis.enabled)
+        chunks_created += self.ingest_configurations(report)
+        chunks_created += self.ingest_di_graph(report)
+        chunks_created += self.ingest_business_domains(report)
+
         logger.info(f"Ingested crawl report for '{svc}': {chunks_created} chunks")
         return chunks_created
+
+    # ── Deep-analysis ingestion ──────────────────────────────────────────
+
+    def ingest_configurations(self, report: CrawlReport) -> int:
+        """Ingest ConfigurationNode entries grouped by project + environment."""
+        chunks = 0
+        svc = report.solution
+        for project in report.projects:
+            if not project.configurations:
+                continue
+            # Group by environment for clearer chunks
+            by_env: dict = {}
+            for cfg in project.configurations:
+                by_env.setdefault(cfg.environment or "default", []).append(cfg)
+
+            for env, items in by_env.items():
+                lines = [f"## Configuration — {project.name} ({env})\n"]
+                for cfg in items:
+                    env_var = f" → ${{{cfg.references_env_var}}}" if cfg.references_env_var else ""
+                    lines.append(
+                        f"- `{cfg.key}` *[{cfg.kind}]* = `{cfg.value}`{env_var}"
+                    )
+                doc_id = f"crawl_config_{svc}_{project.name}_{env}"
+                chunks += self.store.ingest_document(
+                    "\n".join(lines),
+                    {
+                        "service_name": svc,
+                        "project_name": project.name,
+                        "environment": env,
+                        "chunk_type": "configuration",
+                        "source_file": "config_analyzer",
+                    },
+                    doc_id,
+                )
+        return chunks
+
+    def ingest_di_graph(self, report: CrawlReport) -> int:
+        """Ingest DI registrations as one chunk per project."""
+        chunks = 0
+        svc = report.solution
+        for project in report.projects:
+            if not project.di_registrations:
+                continue
+            lines = [f"## Dependency Injection — {project.name}\n"]
+            for reg in project.di_registrations:
+                impl = f" → `{reg.implementation}`" if reg.implementation else ""
+                client = f' (named "{reg.named_client}")' if reg.named_client else ""
+                lines.append(
+                    f"- `{reg.method}` `{reg.service_type}`{impl}{client} "
+                    f"({reg.source_file}:{reg.line})"
+                )
+            doc_id = f"crawl_di_{svc}_{project.name}"
+            chunks += self.store.ingest_document(
+                "\n".join(lines),
+                {
+                    "service_name": svc,
+                    "project_name": project.name,
+                    "chunk_type": "di_registration",
+                    "source_file": "dependency_extractor",
+                },
+                doc_id,
+            )
+        return chunks
+
+    def ingest_business_domains(self, report: CrawlReport) -> int:
+        """Ingest business domains and cross-domain contracts."""
+        chunks = 0
+        svc = report.solution
+
+        for domain in report.business_domains:
+            lines = [
+                f"## Business Domain — {domain.name}\n",
+                f"**Projects:** {', '.join(domain.projects) or '—'}",
+                f"**Namespaces:** {', '.join(domain.namespaces) or '—'}",
+                f"**Aggregates:** {', '.join(domain.aggregates) or '—'}",
+                f"**Domain Events:** {', '.join(domain.domain_events) or '—'}",
+                f"**Endpoints:** {len(domain.endpoints)}",
+                f"**Inbound contracts from:** {', '.join(domain.inbound_contracts) or '—'}",
+                f"**Outbound contracts to:** {', '.join(domain.outbound_contracts) or '—'}",
+            ]
+            if domain.endpoints:
+                lines.append("\n### Endpoints")
+                for ep in domain.endpoints[:50]:
+                    lines.append(f"- `{ep}`")
+            doc_id = f"crawl_domain_{svc}_{domain.name}"
+            chunks += self.store.ingest_document(
+                "\n".join(lines),
+                {
+                    "service_name": svc,
+                    "domain_name": domain.name,
+                    "chunk_type": "business_domain",
+                    "source_file": "domain_mapper",
+                },
+                doc_id,
+            )
+
+        if report.domain_contracts:
+            lines = ["## Domain Contracts\n"]
+            for c in report.domain_contracts:
+                url = f" @ {c.config_url}" if c.config_url else ""
+                lines.append(
+                    f"- [{c.transport}] **{c.source_domain or c.source_project}** "
+                    f"→ **{c.target_domain or c.target_service}** "
+                    f"(`{c.interface}`){url}"
+                )
+            doc_id = f"crawl_contracts_{svc}"
+            chunks += self.store.ingest_document(
+                "\n".join(lines),
+                {
+                    "service_name": svc,
+                    "chunk_type": "domain_contract",
+                    "source_file": "domain_mapper",
+                },
+                doc_id,
+            )
+        return chunks
 
     def full_rebuild(self, docs_dir: str, metadata: dict = None) -> dict:
         """Drop all data and re-ingest everything from a directory."""

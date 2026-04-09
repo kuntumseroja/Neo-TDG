@@ -12,6 +12,11 @@ from src.models.crawler import (
 )
 from src.crawler.scheduler_discovery import discover_schedulers
 from src.crawler.integration_discovery import discover_integrations
+from src.crawler.config_analyzer import scan_project_configs
+from src.crawler.dependency_extractor import scan_project_di
+from src.crawler.code_analyzer import scan_project_symbols
+from src.crawler.domain_mapper import build_domain_map
+from src.crawler.ui_crawler import discover_ui_components
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +50,16 @@ _DBCONTEXT_PATTERN = re.compile(
 _DBSET_PATTERN = re.compile(
     r"DbSet<(\w+)>\s+(\w+)", re.MULTILINE
 )
+# Property declarations inside an entity class:
+#   public virtual ICollection<Order> Orders { get; set; }
+#   public string Name { get; set; }
+_ENTITY_PROP_PATTERN = re.compile(
+    r"public\s+(?:virtual\s+)?([\w<>?\[\],. ]+?)\s+(\w+)\s*\{\s*get\s*;",
+    re.MULTILINE,
+)
+_ENTITY_CLASS_PATTERN = re.compile(
+    r"\bclass\s+(\w+)\s*(?::\s*[\w<>, ]+)?\s*\{",
+)
 _SAGA_PATTERN = re.compile(
     r"class\s+(\w+)\s*:\s*.*?(?:MassTransitStateMachine|Saga)<(\w+)>", re.MULTILINE
 )
@@ -56,10 +71,17 @@ class SolutionCrawler:
     def __init__(self, config: dict = None):
         self.config = config or {}
         self._scan_depth = self.config.get("scan_depth", 10)
+        deep = self.config.get("deep_analysis", {}) or {}
+        self._deep_enabled = bool(deep.get("enabled", False))
+        self._deep_hints = deep.get("domain_hints", {}) or {}
 
-    def crawl(self, sln_path: str, progress_callback=None) -> CrawlReport:
+    def crawl(self, sln_path: str, progress_callback=None, angular_path: str = "") -> CrawlReport:
         """
         Starting from .sln, discover all projects and their components.
+
+        If `angular_path` is provided (or `angular.json` is auto-discovered
+        anywhere under the solution directory), Angular components are
+        crawled and merged into `report.ui_components`.
         """
         sln_file = Path(sln_path)
 
@@ -91,6 +113,25 @@ class SolutionCrawler:
                 continue
 
             project_info = self._crawl_project(csproj_path, entry["name"])
+
+            # Deep analysis (opt-in via crawler.deep_analysis.enabled)
+            if self._deep_enabled:
+                project_dir_for_deep = csproj_path.parent
+                try:
+                    project_info.configurations = scan_project_configs(
+                        project_dir_for_deep, project_name=entry["name"]
+                    )
+                    project_info.di_registrations = scan_project_di(
+                        project_dir_for_deep, project_name=entry["name"]
+                    )
+                    project_info.code_symbols = scan_project_symbols(
+                        project_dir_for_deep, project_name=entry["name"]
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Deep analysis failed for {entry['name']}: {e}"
+                    )
+
             report.projects.append(project_info)
 
             # Gather C# files from project directory
@@ -120,13 +161,54 @@ class SolutionCrawler:
             except Exception as e:
                 logger.warning(f"Error in discovery for {cs_file}: {e}")
 
+        # Enrich data models with properties and relationships for ER diagram
+        if report.data_models:
+            self._enrich_data_models(report, all_cs_files)
+
         # Build dependency graph
         report.dependency_graph = self._build_dependency_graph(report.projects)
+
+        # Angular front-end discovery (explicit path wins; otherwise
+        # auto-detect any angular.json under the solution directory).
+        ng_roots = []
+        if angular_path:
+            ng_roots.append(Path(angular_path))
+        else:
+            try:
+                for ng_json in sln_dir.rglob("angular.json"):
+                    parts_lower = [p.lower() for p in ng_json.parts]
+                    if any(skip in parts_lower for skip in ["node_modules", "bin", "obj", ".git"]):
+                        continue
+                    ng_roots.append(ng_json.parent)
+            except Exception as e:
+                logger.warning(f"Angular auto-detect failed: {e}")
+        for ng_root in ng_roots:
+            try:
+                ui = discover_ui_components(str(ng_root))
+                if ui:
+                    report.ui_components.extend(ui)
+                    logger.info(f"Angular: discovered {len(ui)} components in {ng_root}")
+            except Exception as e:
+                logger.warning(f"Angular crawl failed for {ng_root}: {e}")
+
+        # Deep analysis: cluster projects/symbols into business domains and
+        # derive cross-domain contracts.
+        if self._deep_enabled:
+            try:
+                build_domain_map(report, hints=self._deep_hints)
+            except Exception as e:
+                logger.warning(f"Domain mapping failed: {e}")
 
         logger.info(
             f"Crawl complete: {len(report.projects)} projects, "
             f"{len(report.endpoints)} endpoints, {len(report.consumers)} consumers, "
-            f"{len(report.schedulers)} schedulers, {len(report.integrations)} integrations"
+            f"{len(report.schedulers)} schedulers, {len(report.integrations)} integrations, "
+            f"{len(report.ui_components)} ui components"
+            + (
+                f", {len(report.business_domains)} domains, {len(report.domain_contracts)} contracts"
+                if self._deep_enabled
+                else ""
+            )
         )
         return report
 
@@ -269,6 +351,81 @@ class SolutionCrawler:
                 properties=[prop_name],
                 file=file_path,
             ))
+
+    def _enrich_data_models(self, report: CrawlReport, all_cs_files: List[Path]):
+        """Walk entity class files to populate properties and relationships.
+
+        For each `DataModel` already discovered (via `DbSet<X>`), find a
+        `class X` definition in any .cs file and extract its public
+        get/set properties. Properties whose declared type matches another
+        known entity (or `ICollection<EntityName>`) are recorded as
+        relationships so the ER diagram can render edges between them.
+        """
+        entity_names = {dm.name for dm in report.data_models}
+        # name -> first class body found
+        bodies: Dict[str, str] = {}
+        for cs_file in all_cs_files:
+            try:
+                content = cs_file.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            for cls_match in _ENTITY_CLASS_PATTERN.finditer(content):
+                cname = cls_match.group(1)
+                if cname not in entity_names or cname in bodies:
+                    continue
+                # Walk braces from the opening { to find the class body
+                start = cls_match.end() - 1  # position of '{'
+                depth = 0
+                end = None
+                for j in range(start, len(content)):
+                    ch = content[j]
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = j
+                            break
+                if end is None:
+                    continue
+                bodies[cname] = content[start + 1:end]
+
+        for dm in report.data_models:
+            body = bodies.get(dm.name)
+            if not body:
+                continue
+            props: List[str] = []
+            rels: List[str] = []
+            for prop_match in _ENTITY_PROP_PATTERN.finditer(body):
+                ptype = prop_match.group(1).strip()
+                pname = prop_match.group(2).strip()
+                # Skip noise / nav-only modifiers
+                ptype_clean = ptype.replace("virtual", "").strip()
+                props.append(f"{ptype_clean} {pname}")
+
+                # Detect navigation properties → relationships
+                # ICollection<X>, List<X>, IEnumerable<X>
+                col_match = re.match(
+                    r"(?:ICollection|List|IEnumerable|HashSet)<(\w+)>",
+                    ptype_clean,
+                )
+                if col_match:
+                    target = col_match.group(1)
+                    if target in entity_names:
+                        rels.append(f"1..*:{target}")
+                    continue
+                # Single navigation: type matches another entity name
+                if ptype_clean in entity_names and ptype_clean != dm.name:
+                    rels.append(f"*..1:{ptype_clean}")
+                    continue
+                # Foreign key column convention: FooId
+                if pname.endswith("Id") and pname != "Id":
+                    fk_target = pname[:-2]
+                    if fk_target in entity_names and fk_target != dm.name:
+                        rels.append(f"*..1:{fk_target}")
+            # Replace the bare DbSet property name with the rich property list
+            dm.properties = props or dm.properties
+            dm.relationships = rels
 
     @staticmethod
     def _build_dependency_graph(projects: List[ProjectInfo]) -> dict:

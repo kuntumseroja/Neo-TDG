@@ -20,6 +20,7 @@ streamlit-mermaid>=0.0.4
 
 # === Document Generation ===
 fpdf2>=2.7.0
+pypdf>=4.0.0
 
 # === API Server ===
 fastapi>=0.104.0

@@ -1,7 +1,12 @@
 """Flow Explorer page — trace flows and explain components."""
 
 import streamlit as st
-from src.ui.components import render_mermaid, render_markdown_with_mermaid, render_carbon_tag
+from src.ui.components import (
+    render_mermaid,
+    render_markdown_with_mermaid,
+    render_carbon_tag,
+    stage_uploaded_file,
+)
 
 
 def render_flow_explorer():
@@ -94,6 +99,19 @@ def _render_explain_component(llm, store):
             placeholder="e.g., InvoiceHandler",
             key="explain_component",
         )
+
+    with st.expander("…or upload a file (PDF / .cs / .md / .txt)", expanded=False):
+        uploaded = st.file_uploader(
+            "Upload component file",
+            type=["cs", "pdf", "md", "txt"],
+            key="explain_upload",
+            accept_multiple_files=False,
+        )
+        if uploaded is not None:
+            staged = stage_uploaded_file(uploaded)
+            if staged:
+                file_path = staged
+                st.success(f"Using uploaded **{uploaded.name}** → `{staged}`")
 
     explain_type = st.radio(
         "Explain As",

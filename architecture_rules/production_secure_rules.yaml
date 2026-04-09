@@ -1,0 +1,735 @@
+# =============================================================================
+# Lumen.AI — Production-Scale Architecture & Compliance Rules
+# =============================================================================
+# Designed for regulated, air-gapped enterprise deployments (e.g. CoreTax DJP).
+# Aligned with:
+#   Security & Software Assurance
+#   - OWASP ASVS 4.0 (Application Security Verification Standard)
+#   - OWASP Top 10 (2021) / OWASP API Top 10 (2023)
+#   - NIST SP 800-53 Rev. 5 (AC, AU, SC, SI, CM control families)
+#   - NIST SP 800-218 SSDF (Secure Software Development Framework)
+#   - NIST SP 800-190 (Container Security)
+#   - NIST SP 800-207 (Zero Trust Architecture)
+#   - CIS Benchmarks (Kubernetes, Docker, .NET, Linux)
+#   - SLSA Level 3+ supply-chain integrity
+#   - FIPS 140-3 (Cryptographic Module Validation)
+#
+#   ISO Standards
+#   - ISO/IEC 27001:2022 — Information Security Management Systems
+#   - ISO/IEC 27002:2022 — Information Security Controls
+#   - ISO/IEC 27017:2015 — Cloud Services Security
+#   - ISO/IEC 27018:2019 — Public Cloud PII Protection
+#   - ISO/IEC 27701:2019 — Privacy Information Management
+#   - ISO/IEC 22301:2019 — Business Continuity Management
+#   - ISO/IEC 31000:2018 — Risk Management
+#   - ISO/IEC 20000-1:2018 — IT Service Management
+#   - ISO/IEC 25010:2011 — Software Quality Model
+#   - ISO 9001:2015 — Quality Management Systems
+#
+#   Financial Services Standards & Regulations
+#   - PCI-DSS v4.0 — Payment Card Industry Data Security Standard
+#   - PCI PIN Security Requirements v3.0
+#   - SOX (Sarbanes-Oxley) Section 404 — Internal Controls over Fin. Reporting
+#   - Basel III / Basel IV — Operational Risk & Capital Adequacy
+#   - SWIFT CSCF v2024 — Customer Security Controls Framework
+#   - ISO 20022 — Universal Financial Messaging
+#   - ISO 8583 — Card Transaction Messaging
+#   - PSD2 RTS — Strong Customer Authentication & Open Banking
+#   - FFIEC IT Examination Handbook
+#   - COBIT 2019 — IT Governance Framework
+#   - SOC 1 / SOC 2 Type II — Trust Services Criteria
+#
+#   Indonesian / Regional Regulations
+#   - UU PDP No. 27/2022 — Personal Data Protection Law
+#   - UU ITE No. 11/2008 (rev. 19/2016) — Electronic Information & Transactions
+#   - PBI No. 23/6/PBI/2021 — Bank Indonesia Payment System Provider rules
+#   - POJK No. 11/POJK.03/2022 — OJK IT Risk Management for Banks
+#   - POJK No. 38/POJK.03/2016 — Risk Management in IT Use by Banks
+#   - Perpres No. 95/2018 — SPBE (Sistem Pemerintahan Berbasis Elektronik)
+#
+#   Architectural Best Practices
+#   - Clean Architecture / DDD / CQRS / Hexagonal layering
+#   - Twelve-Factor App methodology
+#   - AWS / Azure Well-Architected Framework
+#
+# Sections marked [ENFORCED] are consumed by ArchitectureValidator today.
+# Sections marked [GUIDANCE] are read by reviewers/auditors and SHOULD be
+# enforced via dedicated CI scanners (Trivy, Semgrep, gitleaks, Checkov, etc).
+# =============================================================================
+
+metadata:
+  name: production-secure-rules
+  version: 1.0.0
+  classification: internal
+  applies_to: ["CoreTax", "TaxAdministration", "RegulatedFinTech"]
+  owner: Platform Architecture Guild
+  last_reviewed: 2026-04-09
+  review_cycle_days: 90
+
+# -----------------------------------------------------------------------------
+# 1. LAYER DEPENDENCIES                                              [ENFORCED]
+# -----------------------------------------------------------------------------
+# Strict Clean Architecture: dependencies point inward only. Domain knows
+# nothing about Infrastructure or Presentation. Shared kernel must remain
+# free of I/O concerns.
+layer_dependencies:
+  Domain:
+    allowed_refs: []
+    forbidden_refs: ["Infrastructure", "Presentation", "Tests", "Web", "Api", "Persistence"]
+  Application:
+    allowed_refs: ["Domain", "Shared", "Contracts"]
+    forbidden_refs: ["Infrastructure", "Presentation", "Persistence", "Web"]
+  Infrastructure:
+    allowed_refs: ["Domain", "Application", "Shared", "Contracts"]
+    forbidden_refs: ["Presentation"]
+  Presentation:
+    allowed_refs: ["Application", "Domain", "Shared", "Contracts"]
+    forbidden_refs: ["Infrastructure", "Persistence"]
+  Shared:
+    allowed_refs: ["Contracts"]
+    forbidden_refs: ["Infrastructure", "Presentation", "Application", "Domain"]
+  Contracts:
+    allowed_refs: []
+    forbidden_refs: ["Infrastructure", "Presentation", "Application", "Domain", "Shared"]
+  Tests:
+    allowed_refs: ["Domain", "Application", "Infrastructure", "Presentation", "Shared", "Contracts"]
+    forbidden_refs: []
+
+# -----------------------------------------------------------------------------
+# 2. NAMING CONVENTIONS                                              [ENFORCED]
+# -----------------------------------------------------------------------------
+naming_conventions:
+  Domain:
+    must_not_contain:
+      - "Controller"
+      - "Repository"
+      - "DbContext"
+      - "Migration"
+      - "HttpClient"
+      - "RestClient"
+      - "Consumer"
+      - "Producer"
+      - "Cache"
+      - "Logger"
+  Application:
+    must_contain_one_of:
+      - "Handler"
+      - "Service"
+      - "Command"
+      - "Query"
+      - "Validator"
+      - "Dto"
+      - "Mapper"
+      - "UseCase"
+    must_not_contain:
+      - "Controller"
+      - "DbContext"
+  Infrastructure:
+    must_contain_one_of:
+      - "Repository"
+      - "DbContext"
+      - "Migration"
+      - "Client"
+      - "Persistence"
+      - "Adapter"
+      - "Gateway"
+      - "Provider"
+  Presentation:
+    must_contain_one_of:
+      - "Controller"
+      - "Endpoint"
+      - "Hub"
+      - "Api"
+      - "Web"
+      - "Host"
+      - "Bff"
+    must_not_contain:
+      - "Repository"
+      - "DbContext"
+  Tests:
+    must_contain_one_of:
+      - "Tests"
+      - "UnitTests"
+      - "IntegrationTests"
+      - "ContractTests"
+      - "ArchitectureTests"
+
+# -----------------------------------------------------------------------------
+# 3. PATTERN COMPLIANCE                                              [ENFORCED]
+# -----------------------------------------------------------------------------
+pattern_compliance:
+  commands_need_validators: true        # Every ICommand must have a FluentValidator
+  queries_need_authorization: true      # Every IQuery must declare an authz policy
+  handlers_need_interfaces: true        # Handlers must implement IRequestHandler<,>
+  controllers_need_authorize: true      # No anonymous controllers outside /health
+  events_must_be_immutable: true        # Domain events: get-only properties
+  aggregates_root_only_writes: true     # Repositories expose only aggregate roots
+  max_coupling_threshold: 6             # Outgoing project refs per module
+  max_method_cyclomatic_complexity: 10  # McCabe complexity ceiling
+  max_class_lines: 400                  # Single Responsibility heuristic
+  max_method_lines: 60                  # Method size ceiling
+  max_constructor_parameters: 6         # Constructor injection over-coupling
+  forbid_static_mutable_state: true     # No `static` mutable fields outside config
+  forbid_service_locator: true          # No `IServiceProvider.GetService(...)` in app code
+
+# -----------------------------------------------------------------------------
+# 4. SECURE CODING STANDARDS                                         [GUIDANCE]
+# -----------------------------------------------------------------------------
+# Mapped to OWASP ASVS 4.0 and OWASP Top 10 (2021).
+secure_coding:
+  forbidden_apis:
+    # Cryptography — broken or deprecated primitives
+    - pattern: "MD5\\.Create|new MD5"
+      severity: error
+      asvs: "V6.2.5"
+      reason: "MD5 is cryptographically broken. Use SHA-256+ for hashing, Argon2id/PBKDF2 for passwords."
+    - pattern: "SHA1\\.Create|new SHA1"
+      severity: error
+      asvs: "V6.2.5"
+      reason: "SHA-1 is collision-vulnerable."
+    - pattern: "DESCryptoServiceProvider|TripleDES"
+      severity: error
+      asvs: "V6.2.4"
+      reason: "DES/3DES are deprecated. Use AES-256-GCM."
+    - pattern: "ECB"
+      severity: error
+      reason: "ECB cipher mode leaks plaintext patterns. Use GCM or CBC+HMAC."
+    - pattern: "new Random\\(|Random\\.Shared"
+      severity: warning
+      asvs: "V6.3.1"
+      reason: "System.Random is not cryptographically secure. Use RandomNumberGenerator for tokens/keys/salts."
+
+    # Injection — OWASP A03
+    - pattern: "string\\.Format\\([^)]*SELECT|\\\".*SELECT.*\\\"\\s*\\+"
+      severity: error
+      asvs: "V5.3.4"
+      owasp: "A03:2021"
+      reason: "SQL injection risk. Use parameterized queries / EF Core LINQ."
+    - pattern: "Process\\.Start\\(.*\\+|ProcessStartInfo.*Arguments\\s*=\\s*[^\"]*\\+"
+      severity: error
+      asvs: "V5.3.8"
+      reason: "Command injection. Validate and pass arguments as a list."
+    - pattern: "XmlDocument\\(\\)|XmlReader\\.Create\\([^,)]+\\)"
+      severity: warning
+      asvs: "V5.5.2"
+      reason: "Configure XmlReaderSettings { DtdProcessing = Prohibit } to prevent XXE."
+
+    # Deserialization — OWASP A08
+    - pattern: "BinaryFormatter|NetDataContractSerializer|SoapFormatter"
+      severity: error
+      asvs: "V5.5.3"
+      owasp: "A08:2021"
+      reason: "Insecure deserialization. Use System.Text.Json with strict types."
+    - pattern: "JsonConvert\\.DeserializeObject<object>|TypeNameHandling\\s*=\\s*TypeNameHandling\\.(All|Auto|Objects)"
+      severity: error
+      reason: "Polymorphic JSON deserialization is exploitable. Use closed-type contracts."
+
+    # Secrets — OWASP A02 / A07
+    - pattern: "(?i)(password|secret|api[_-]?key|token|connectionstring)\\s*=\\s*\"[^\"]{6,}\""
+      severity: error
+      asvs: "V2.10.4"
+      reason: "Hardcoded secret. Move to Vault / Azure Key Vault / Kubernetes Secret."
+
+    # Logging — sensitive data leakage
+    - pattern: "_logger\\.(Log\\w+|LogInformation|LogDebug)\\([^)]*(password|cvv|pan|nik|npwp)"
+      severity: error
+      asvs: "V8.3.4"
+      reason: "PII/PCI data must never appear in logs."
+
+    # Network — TLS / cert validation
+    - pattern: "ServicePointManager\\.ServerCertificateValidationCallback\\s*\\+?=\\s*[^;]*=>\\s*true"
+      severity: error
+      asvs: "V9.2.1"
+      reason: "Disabling TLS certificate validation defeats transport security."
+    - pattern: "SecurityProtocolType\\.(Ssl3|Tls|Tls11)"
+      severity: error
+      reason: "TLS < 1.2 is prohibited. Enforce TLS 1.2+ (prefer 1.3)."
+
+  required_practices:
+    - id: SEC-001
+      asvs: "V4.1.1"
+      description: "All controllers MUST declare [Authorize] unless explicitly [AllowAnonymous] for /health, /metrics, /swagger."
+    - id: SEC-002
+      asvs: "V13.2.3"
+      description: "All HTTP endpoints MUST validate Content-Type and reject unexpected media types."
+    - id: SEC-003
+      asvs: "V5.1.3"
+      description: "All inbound DTOs MUST have a FluentValidator with explicit allow-list rules."
+    - id: SEC-004
+      asvs: "V8.3.1"
+      description: "PII fields (NIK, NPWP, email, phone) MUST be tagged with [PersonalData] and masked in logs."
+    - id: SEC-005
+      asvs: "V12.5.1"
+      description: "File uploads MUST verify magic bytes, enforce size cap, and scan via ICAP/ClamAV."
+    - id: SEC-006
+      asvs: "V14.5.2"
+      description: "Security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy) MUST be set globally."
+    - id: SEC-007
+      asvs: "V3.2.1"
+      description: "Sessions MUST use cryptographically random IDs (>=128 bits) bound to client fingerprint."
+    - id: SEC-008
+      asvs: "V2.4.1"
+      description: "Passwords MUST be hashed with Argon2id (m=64MB, t=3, p=1) or PBKDF2-SHA256 (>=600k iterations)."
+
+# -----------------------------------------------------------------------------
+# 5. AIR-GAPPED DEPLOYMENT POLICY                                    [GUIDANCE]
+# -----------------------------------------------------------------------------
+# Enforced for sovereign / classified environments where the production
+# cluster has zero outbound internet egress.
+airgap_policy:
+  egress_allowlist_only: true
+  forbidden_outbound_hosts:
+    - "*.googleapis.com"
+    - "*.amazonaws.com"
+    - "*.azure.com"
+    - "telemetry.*"
+    - "*.dataDoghq.com"
+    - "*.newrelic.com"
+    - "*.sentry.io"
+    - "api.openai.com"
+    - "huggingface.co"
+    - "registry.npmjs.org"
+    - "nuget.org"
+    - "pypi.org"
+    - "github.com"
+  forbidden_code_patterns:
+    - pattern: "https?://(?!.*\\.internal|.*\\.local|.*\\.gov\\.id)"
+      severity: warning
+      reason: "Public URL hardcoded. Air-gapped builds may not reach external hosts."
+    - pattern: "ApplicationInsights|Datadog|NewRelic|Sentry\\.Init"
+      severity: error
+      reason: "External SaaS telemetry SDK. Use OpenTelemetry → internal collector."
+  required:
+    - "All container images MUST be pulled from the internal Harbor registry (registry.internal/...)."
+    - "All NuGet/npm/pip packages MUST resolve from the internal Nexus/Artifactory mirror."
+    - "DNS resolution MUST be restricted to the internal CoreDNS forwarder."
+    - "Outbound NetworkPolicy MUST default-deny; explicit egress only to allowlisted internal services."
+    - "Build agents MUST run in isolated VLAN with no internet route."
+    - "All third-party JS/CSS MUST be vendored — no CDN <script src> references."
+    - "Time sync MUST use internal NTP (ntp.internal), not pool.ntp.org."
+    - "TLS trust store MUST include only the internal PKI root CA."
+
+# -----------------------------------------------------------------------------
+# 6. SUPPLY CHAIN SECURITY                                           [GUIDANCE]
+# -----------------------------------------------------------------------------
+# SLSA Level 3+ alignment, NIST SSDF PS.3, ISO/IEC 27001 A.5.23.
+supply_chain:
+  sbom_required: true                       # CycloneDX SBOM per artifact
+  signed_artifacts_required: true           # Cosign / Notary v2
+  provenance_required: true                 # SLSA provenance attestation
+  reproducible_builds: true
+  dependency_pinning: true                  # Lockfiles committed (packages.lock.json, package-lock.json)
+  forbidden_licenses:
+    - "GPL-3.0"
+    - "AGPL-3.0"
+    - "SSPL-1.0"
+    - "BUSL-1.1"
+    - "Commons-Clause"
+  vulnerability_thresholds:
+    fail_on_critical: true
+    fail_on_high: true
+    grace_period_days_high: 7
+    grace_period_days_medium: 30
+  scanners_required:
+    - "trivy"        # Container & filesystem
+    - "grype"        # Cross-check
+    - "semgrep"      # SAST
+    - "gitleaks"     # Secret detection
+    - "checkov"      # IaC misconfig
+    - "owasp-dependency-check"
+
+# -----------------------------------------------------------------------------
+# 7. DATA PROTECTION & PRIVACY                                       [GUIDANCE]
+# -----------------------------------------------------------------------------
+# UU PDP No. 27/2022 (Indonesia), GDPR-equivalent controls, PCI-DSS v4.0.
+data_protection:
+  classification_levels: ["public", "internal", "confidential", "restricted", "regulated"]
+  pii_fields_must_be_tagged:
+    - "NIK"            # Nomor Induk Kependudukan
+    - "NPWP"           # Nomor Pokok Wajib Pajak
+    - "FullName"
+    - "DateOfBirth"
+    - "Email"
+    - "PhoneNumber"
+    - "Address"
+    - "BankAccountNumber"
+    - "TaxpayerId"
+  encryption_at_rest:
+    required: true
+    algorithm: "AES-256-GCM"
+    key_management: "HSM or KMS-backed envelope encryption"
+  encryption_in_transit:
+    required: true
+    min_tls_version: "1.2"
+    preferred_tls_version: "1.3"
+    mtls_required_between_services: true
+  data_retention:
+    audit_logs_days: 2555           # ~7 years (Indonesian tax retention)
+    transactional_data_days: 3650   # 10 years
+    pii_purge_on_request: true      # UU PDP Pasal 9
+  data_residency:
+    region: "ID"
+    cross_border_transfer: forbidden
+
+# -----------------------------------------------------------------------------
+# 8. AUTHENTICATION & AUTHORIZATION                                  [GUIDANCE]
+# -----------------------------------------------------------------------------
+identity_access:
+  auth_protocol: "OIDC"
+  token_format: "JWT"
+  jwt_signing_algo: ["RS256", "ES256"]
+  jwt_max_lifetime_minutes: 15
+  refresh_token_max_lifetime_days: 7
+  refresh_token_rotation: true
+  mfa_required_for: ["admin", "operator", "auditor"]
+  rbac_required: true
+  abac_for_data_access: true        # Attribute-based authorization on records
+  service_to_service_auth: "mTLS + SPIFFE/SPIRE"
+  break_glass_account_audited: true
+
+# -----------------------------------------------------------------------------
+# 9. OBSERVABILITY & AUDIT                                           [GUIDANCE]
+# -----------------------------------------------------------------------------
+observability:
+  structured_logging_required: true
+  log_format: "json"
+  correlation_id_propagation: true     # W3C traceparent
+  pii_redaction_in_logs: true
+  audit_log_immutable: true            # Append-only WORM storage
+  audit_log_signed: true               # Hash chain or external timestamp authority
+  metrics_exporter: "OpenTelemetry → internal Prometheus"
+  tracing_exporter: "OpenTelemetry → internal Tempo/Jaeger"
+  health_endpoints:
+    - "/health/live"
+    - "/health/ready"
+    - "/health/startup"
+  required_audit_events:
+    - "auth.login.success"
+    - "auth.login.failure"
+    - "auth.logout"
+    - "authz.access.denied"
+    - "data.read.regulated"
+    - "data.write.regulated"
+    - "config.change"
+    - "user.role.change"
+    - "key.rotation"
+
+# -----------------------------------------------------------------------------
+# 10. RESILIENCE & FAILURE HANDLING                                  [GUIDANCE]
+# -----------------------------------------------------------------------------
+resilience:
+  circuit_breaker_required: true
+  retry_with_jitter_required: true
+  timeout_required_on_all_io: true
+  default_http_timeout_seconds: 30
+  bulkhead_isolation: true
+  graceful_shutdown_seconds: 30
+  health_check_required: true
+  idempotency_keys_for_writes: true
+  outbox_pattern_for_messaging: true
+  saga_pattern_for_distributed_tx: true
+
+# -----------------------------------------------------------------------------
+# 11. CONTAINER & RUNTIME HARDENING                                  [GUIDANCE]
+# -----------------------------------------------------------------------------
+# CIS Docker / CIS Kubernetes Benchmark, NIST SP 800-190.
+runtime_hardening:
+  base_image: "distroless or chiseled-ubuntu (no shell)"
+  run_as_non_root: true
+  read_only_root_filesystem: true
+  drop_all_capabilities: true
+  no_privileged_containers: true
+  no_host_network: true
+  no_host_pid: true
+  seccomp_profile: "RuntimeDefault"
+  apparmor_profile: "runtime/default"
+  resource_limits_required: true
+  pod_security_standard: "restricted"
+  network_policies_required: true
+  service_mesh_mtls: "Istio or Linkerd"
+  image_scan_on_admission: true        # Kyverno / OPA Gatekeeper
+
+# -----------------------------------------------------------------------------
+# 12. TESTING REQUIREMENTS                                           [GUIDANCE]
+# -----------------------------------------------------------------------------
+testing:
+  min_unit_test_coverage_percent: 80
+  min_branch_coverage_percent: 70
+  mutation_test_score_min: 60
+  contract_tests_required: true        # Pact for inter-service APIs
+  load_test_required_pre_release: true
+  chaos_test_required_quarterly: true
+  security_regression_suite: true
+  architecture_tests_required: true    # NetArchTest / ArchUnitNET enforces this YAML
+
+# -----------------------------------------------------------------------------
+# 13. CHANGE MANAGEMENT                                              [GUIDANCE]
+# -----------------------------------------------------------------------------
+change_management:
+  pr_requires_two_reviewers: true
+  pr_requires_security_review_for_paths:
+    - "**/auth/**"
+    - "**/crypto/**"
+    - "**/payments/**"
+    - "**/admin/**"
+    - "**/migrations/**"
+  signed_commits_required: true
+  protected_branches: ["main", "release/*"]
+  no_force_push: true
+  ci_must_pass: ["build", "test", "sast", "sca", "iac-scan", "secret-scan"]
+  deployment_approval_required_for: ["staging", "production"]
+  rollback_plan_required: true
+
+# -----------------------------------------------------------------------------
+# 14. FINANCIAL SERVICES COMPLIANCE                                  [GUIDANCE]
+# -----------------------------------------------------------------------------
+# Applies to any module touching payments, settlement, ledger, billing,
+# tax collection, or banking integration.
+financial_compliance:
+
+  pci_dss_v4:
+    scope: "Any service handling PAN, CVV, track data, or PIN blocks"
+    cardholder_data_must_be_tokenized: true
+    pan_storage_forbidden_except_in: ["CardVault", "Tokenizer"]
+    pan_display_masking_required: true        # Show only last 4 digits
+    cvv_storage_forbidden: true               # PCI-DSS Req 3.3.2
+    pin_block_format: "ISO 9564 format 0/3 or 4"
+    key_management: "FIPS 140-3 Level 3 HSM"
+    network_segmentation_required: true       # CDE isolated VLAN
+    quarterly_asv_scan_required: true         # External ASV scan
+    annual_pen_test_required: true
+    log_retention_min_days: 365
+    compensating_controls_documented: true
+    requirements_addressed:
+      - "Req 1: Network security controls"
+      - "Req 2: Secure configurations"
+      - "Req 3: Protect stored account data"
+      - "Req 4: Strong cryptography in transit over public networks"
+      - "Req 6: Develop and maintain secure systems and software"
+      - "Req 7: Restrict access by business need-to-know"
+      - "Req 8: Identify users and authenticate access"
+      - "Req 10: Log and monitor access"
+      - "Req 11: Test security regularly"
+      - "Req 12: Information security policy"
+
+  sox_section_404:
+    scope: "Financial reporting systems, GL, ledger, journal, period-close"
+    segregation_of_duties_required: true       # Maker-Checker
+    immutable_audit_trail_required: true       # Append-only, hash-chained
+    change_management_evidence_required: true  # Ticket → PR → approval → deploy
+    access_review_quarterly: true
+    privileged_access_recording: true          # Session recording for sysadmin
+    period_close_lockout: true                 # Block writes after close
+    forbid_direct_db_writes_in_prod: true
+
+  basel_operational_risk:
+    risk_register_required: true
+    incident_classification_required: true
+    rcsa_quarterly: true                       # Risk Control Self-Assessment
+    key_risk_indicators_tracked: true
+    business_continuity_rto_minutes: 60
+    business_continuity_rpo_minutes: 5
+    annual_dr_drill_required: true
+
+  iso_20022:
+    scope: "Inter-bank, RTGS, SWIFT MT-to-MX migration, payment messages"
+    message_types_supported:
+      - "pain.001"   # CustomerCreditTransferInitiation
+      - "pain.002"   # CustomerPaymentStatusReport
+      - "pain.008"   # CustomerDirectDebitInitiation
+      - "pacs.008"   # FIToFICustomerCreditTransfer
+      - "pacs.002"   # FIToFIPaymentStatusReport
+      - "pacs.004"   # PaymentReturn
+      - "camt.053"   # BankToCustomerStatement
+      - "camt.054"   # BankToCustomerDebitCreditNotification
+      - "camt.056"   # FIToFIPaymentCancellationRequest
+    schema_validation_required: true
+    bic_validation_required: true              # ISO 9362
+    iban_validation_required: true             # ISO 13616
+    structured_addresses_required: true        # CBPR+ deadline 2025+
+    uetr_required: true                        # SWIFT gpi end-to-end tracking
+
+  iso_8583:
+    scope: "Card-present and switch integrations (POS, ATM, CNP)"
+    field_55_emv_data_required: true
+    mac_required_on_financial_messages: true
+    stand_in_processing_documented: true
+    reversal_handling_idempotent: true
+
+  swift_cscf:
+    scope: "Any service connecting to SWIFTNet (Alliance Access/Lite2/Web)"
+    secure_zone_isolation: true                # Mandatory CSCF 1.1
+    operating_system_hardening: true           # CSCF 2.3
+    multi_factor_auth_for_swift: true          # CSCF 4.2
+    application_hardening: true                # CSCF 2.5A
+    intrusion_detection_required: true         # CSCF 6.4
+    annual_attestation_required: true          # SWIFT KYC-SA
+    independent_assessment: true               # CSCF community standard
+
+  psd2_sca:
+    scope: "Open banking APIs, customer-initiated payments"
+    strong_customer_authentication_required: true
+    sca_factors_min: 2                         # Knowledge / possession / inherence
+    dynamic_linking_required: true             # Amount + payee bound to auth code
+    transaction_risk_analysis_supported: true
+    consent_lifetime_max_days: 180
+    qsealc_certificate_required: true          # eIDAS qualified seal
+    qwac_certificate_required: true            # eIDAS qualified web auth
+    api_must_expose: ["/accounts", "/payments", "/consents"]
+
+  ffiec:
+    layered_security_required: true
+    customer_authentication_high_risk_tx: "out-of-band"
+    fraud_monitoring_realtime: true
+    incident_response_plan_tested_annually: true
+
+  bank_indonesia_ojk:
+    scope: "Indonesian banking, payment system providers, e-money issuers"
+    data_residency: "ID"                       # PBI 23/6
+    local_processing_required: true            # Domestic switching
+    system_audit_annual: true                  # POJK 38
+    it_risk_assessment_required: true
+    incident_reporting_to_regulator_hours: 24  # POJK 11/2022
+    business_impact_analysis_required: true
+    third_party_risk_assessment: true
+
+# -----------------------------------------------------------------------------
+# 15. ISO STANDARDS COMPLIANCE                                       [GUIDANCE]
+# -----------------------------------------------------------------------------
+iso_compliance:
+
+  iso_27001_isms:
+    scope: "Information Security Management System — full Annex A 2022"
+    controls_in_scope:
+      organizational:
+        - "A.5.1 Information security policies"
+        - "A.5.7 Threat intelligence"
+        - "A.5.8 Information security in project management"
+        - "A.5.9 Inventory of information and other associated assets"
+        - "A.5.10 Acceptable use of information"
+        - "A.5.12 Classification of information"
+        - "A.5.15 Access control"
+        - "A.5.17 Authentication information"
+        - "A.5.19 Information security in supplier relationships"
+        - "A.5.23 Information security for use of cloud services"
+        - "A.5.24 Information security incident management planning"
+        - "A.5.30 ICT readiness for business continuity"
+        - "A.5.33 Protection of records"
+        - "A.5.34 Privacy and protection of PII"
+      people:
+        - "A.6.3 Information security awareness, education and training"
+        - "A.6.6 Confidentiality or non-disclosure agreements"
+      physical:
+        - "A.7.4 Physical security monitoring"
+        - "A.7.10 Storage media"
+      technological:
+        - "A.8.1 User endpoint devices"
+        - "A.8.2 Privileged access rights"
+        - "A.8.3 Information access restriction"
+        - "A.8.5 Secure authentication"
+        - "A.8.7 Protection against malware"
+        - "A.8.8 Management of technical vulnerabilities"
+        - "A.8.9 Configuration management"
+        - "A.8.10 Information deletion"
+        - "A.8.11 Data masking"
+        - "A.8.12 Data leakage prevention"
+        - "A.8.13 Information backup"
+        - "A.8.15 Logging"
+        - "A.8.16 Monitoring activities"
+        - "A.8.20 Networks security"
+        - "A.8.23 Web filtering"
+        - "A.8.24 Use of cryptography"
+        - "A.8.25 Secure development life cycle"
+        - "A.8.26 Application security requirements"
+        - "A.8.27 Secure system architecture and engineering principles"
+        - "A.8.28 Secure coding"
+        - "A.8.29 Security testing in development and acceptance"
+        - "A.8.31 Separation of development, test and production environments"
+        - "A.8.32 Change management"
+
+  iso_27017_cloud:
+    shared_responsibility_documented: true
+    customer_data_isolation_required: true
+    cloud_admin_operations_logged: true
+    virtual_network_segregation: true
+
+  iso_27018_cloud_pii:
+    pii_processing_purpose_documented: true
+    pii_subject_consent_required: true
+    pii_disclosure_register_maintained: true
+    pii_returned_or_deleted_on_termination: true
+
+  iso_27701_privacy:
+    pims_aligned_with_isms: true               # Privacy Information Mgmt System
+    dpia_required_for_high_risk: true          # Data Protection Impact Assessment
+    privacy_by_design_required: true
+    privacy_by_default_required: true
+    data_processor_agreements_required: true
+    breach_notification_hours: 72              # Aligned with GDPR/UU PDP
+
+  iso_22301_bcm:
+    business_continuity_plan_required: true
+    rto_documented_per_service: true
+    rpo_documented_per_service: true
+    bia_annual: true                           # Business Impact Analysis
+    dr_test_frequency: "semi-annual"
+    crisis_communication_plan: true
+    alternate_site_required: true              # Hot/warm DR site
+
+  iso_31000_risk:
+    risk_appetite_statement_documented: true
+    risk_register_per_service: true
+    risk_treatment_plan_required: true
+    residual_risk_signoff_required: true
+    risk_review_quarterly: true
+
+  iso_25010_quality:
+    target_quality_attributes:
+      functional_suitability: "high"
+      performance_efficiency: "high"
+      compatibility: "medium"
+      usability: "high"
+      reliability: "very high"
+      security: "very high"
+      maintainability: "high"
+      portability: "medium"
+
+  iso_20000_itsm:
+    incident_management_process_defined: true
+    problem_management_process_defined: true
+    change_management_process_defined: true
+    release_management_process_defined: true
+    service_catalog_maintained: true
+    sla_documented_per_service: true
+
+# -----------------------------------------------------------------------------
+# 16. CRYPTOGRAPHIC STANDARDS                                        [GUIDANCE]
+# -----------------------------------------------------------------------------
+# FIPS 140-3 + NIST SP 800-131A approved algorithms only.
+cryptography:
+  approved_symmetric: ["AES-128-GCM", "AES-256-GCM", "ChaCha20-Poly1305"]
+  approved_asymmetric: ["RSA-3072", "RSA-4096", "ECDSA-P256", "ECDSA-P384", "Ed25519"]
+  approved_hash: ["SHA-256", "SHA-384", "SHA-512", "SHA3-256", "SHA3-512"]
+  approved_kdf: ["Argon2id", "PBKDF2-HMAC-SHA256", "scrypt", "HKDF-SHA256"]
+  approved_signature: ["RSA-PSS", "ECDSA", "Ed25519"]
+  forbidden:
+    - "MD5"
+    - "SHA-1"
+    - "DES"
+    - "3DES"
+    - "RC4"
+    - "Blowfish"
+    - "RSA-PKCS1v1.5 (signing)"
+    - "RSA-1024"
+    - "DH-1024"
+    - "ECB mode"
+    - "Static IVs"
+  key_lifetime:
+    data_encryption_key_max_days: 365
+    key_encryption_key_max_days: 730
+    signing_key_max_days: 1095
+  key_storage: "FIPS 140-3 L3 HSM (Thales, Entrust, AWS CloudHSM)"
+  pq_readiness:                                # Post-Quantum migration plan
+    inventory_complete: true
+    hybrid_kem_supported: false                # Track ML-KEM (Kyber) adoption
+    target_pqc_ready_by: "2027-12-31"
