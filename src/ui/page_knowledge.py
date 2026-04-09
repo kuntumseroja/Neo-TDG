@@ -97,10 +97,16 @@ def render_knowledge_management():
             "`pypdf` and ingested as a single document."
         )
         uploaded = st.file_uploader(
-            "Choose a .md or .pdf file",
+            "Choose one or more .md / .pdf files",
             type=["md", "markdown", "txt", "pdf"],
             key="kb_upload_file",
-            accept_multiple_files=False,
+            accept_multiple_files=True,
+            help=(
+                "If files appear with a red ⚠ icon on HF Spaces, the "
+                "iframe's XSRF cookie was blocked. The Space config sets "
+                "enableXsrfProtection=false to work around this — redeploy "
+                "if you still see rejections."
+            ),
         )
         u_col1, u_col2 = st.columns(2)
         with u_col1:
@@ -115,27 +121,62 @@ def render_knowledge_management():
         if st.button(
             "Ingest Uploaded File", type="primary", key="btn_kb_upload_ingest"
         ):
+            # Normalize to a list — accept_multiple_files=True returns a
+            # list, but older sessions / single-file selections may still
+            # surface a single UploadedFile object.
             if not uploaded:
-                st.error("Please choose a file to upload first.")
+                files = []
+            elif isinstance(uploaded, list):
+                files = uploaded
             else:
-                try:
-                    raw = uploaded.getvalue()
-                    name = uploaded.name
-                    suffix = Path(name).suffix.lower()
-                    with st.spinner(f"Extracting and ingesting {name}..."):
-                        if suffix == ".pdf":
-                            content = _extract_pdf_text(raw)
-                            doc_kind = "uploaded_pdf"
-                        else:
-                            content = raw.decode("utf-8", errors="ignore")
-                            doc_kind = "uploaded_markdown"
+                files = [uploaded]
 
-                        if not content.strip():
-                            st.error(
-                                "No extractable text in the file. "
-                                "Scanned PDFs (image-only) need OCR first."
-                            )
-                        else:
+            if not files:
+                st.error(
+                    "Please choose a file to upload first. If you see a "
+                    "red ⚠ next to a file name, Streamlit's XSRF check "
+                    "rejected it server-side — this is fixed in the "
+                    "current .streamlit/config.toml; redeploy the Space "
+                    "if it persists."
+                )
+            else:
+                before_total = (
+                    store.get_stats().get("total_chunks", 0) if store else 0
+                )
+                results = []
+                for up in files:
+                    name = getattr(up, "name", "<unknown>")
+                    try:
+                        raw = up.getvalue()
+                    except Exception as e:
+                        logger.exception("Upload read failed for %s", name)
+                        results.append((name, "error", f"read failed: {e}"))
+                        continue
+                    if not raw:
+                        results.append(
+                            (name, "error", "empty file (rejected by Streamlit?)")
+                        )
+                        continue
+                    suffix = Path(name).suffix.lower()
+                    try:
+                        with st.spinner(f"Extracting and ingesting {name}..."):
+                            if suffix == ".pdf":
+                                content = _extract_pdf_text(raw)
+                                doc_kind = "uploaded_pdf"
+                            else:
+                                content = raw.decode("utf-8", errors="ignore")
+                                doc_kind = "uploaded_markdown"
+
+                            if not content.strip():
+                                results.append(
+                                    (
+                                        name,
+                                        "error",
+                                        "no extractable text (scanned PDF?)",
+                                    )
+                                )
+                                continue
+
                             metadata = {
                                 "source_file": name,
                                 "doc_kind": doc_kind,
@@ -151,19 +192,42 @@ def render_knowledge_management():
                             chunks = pipeline.store.ingest_document(
                                 content, metadata, doc_id
                             )
-                            st.success(
-                                f"Ingested **{name}** "
-                                f"({len(content):,} chars) → "
-                                f"**{chunks}** chunks created."
+                            results.append(
+                                (name, "ok", f"{chunks} chunks ({len(content):,} chars)")
                             )
-                            with st.expander("Preview extracted text", expanded=False):
-                                st.text(
-                                    content[:4000]
-                                    + ("\n\n... (truncated)" if len(content) > 4000 else "")
-                                )
-                except Exception as e:
-                    logger.exception("Upload ingest failed")
-                    st.error(f"Ingest failed: {e}")
+                    except Exception as e:
+                        logger.exception("Upload ingest failed for %s", name)
+                        results.append((name, "error", str(e)))
+
+                after_total = (
+                    store.get_stats().get("total_chunks", 0) if store else 0
+                )
+                delta = after_total - before_total
+                delta_str = (
+                    f"+{delta}" if delta > 0
+                    else f"{delta}" if delta < 0
+                    else "±0 (replaced existing)"
+                )
+
+                ok_count = sum(1 for _, s, _ in results if s == "ok")
+                err_count = sum(1 for _, s, _ in results if s == "error")
+
+                if ok_count:
+                    st.success(
+                        f"Ingested **{ok_count}/{len(results)}** file(s). "
+                        f"Store total: **{before_total} → {after_total}** "
+                        f"({delta_str})"
+                    )
+                if err_count:
+                    st.error(f"{err_count} file(s) failed — see details below.")
+
+                with st.expander("Per-file result", expanded=bool(err_count)):
+                    for name, status, info in results:
+                        icon = "✅" if status == "ok" else "❌"
+                        st.write(f"{icon} **{name}** — {info}")
+
+                if ok_count:
+                    st.rerun()
 
     with tab1:
         ingest_path = st.text_input(

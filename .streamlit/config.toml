@@ -1,6 +1,16 @@
 [server]
 port = 8502
 headless = true
+# HF Spaces serves Streamlit inside a cross-origin iframe. The default
+# XSRF/CORS protection rejects file uploads with a silent red ⚠ chip
+# because the XSRF cookie never reaches the upload endpoint. Disabling
+# both is the documented HF workaround and is safe for a single-tenant
+# Space.
+enableXsrfProtection = false
+enableCORS = false
+# Allow sizeable PDFs (default is 200MB — set explicitly so HF Space
+# deployments don't silently cap smaller).
+maxUploadSize = 200
 
 [theme]
 primaryColor = "#0f62fe"
