@@ -25,6 +25,7 @@ class CrawlDocGenerator:
             self._section_overview(report),
             self._section_business_domains(report),
             self._section_domain_contracts(report),
+            self._section_sequence_flows(report),
             self._section_architecture_diagram(report),
             self._section_projects(report),
             self._section_configurations(report),
@@ -236,18 +237,18 @@ class CrawlDocGenerator:
 
         lines = ["```mermaid", "graph TD"]
         for layer, projects in sorted(layers.items()):
-            safe_layer = layer.replace(" ", "_")
-            lines.append(f"    subgraph {safe_layer}[\"{layer} Layer\"]")
+            safe_layer = layer.replace(" ", "_").replace("-", "_")
+            lines.append(f'    subgraph {safe_layer}["{layer} Layer"]')
             for proj in projects:
-                safe_name = proj.replace(".", "_").replace("-", "_")
-                lines.append(f"        {safe_name}[\"{proj}\"]")
+                safe_name = self._mermaid_id(proj)
+                lines.append(f'        {safe_name}["{proj}"]')
             lines.append("    end")
 
-        # Add edges from dependency graph
-        edges = report.dependency_graph.get("edges", [])
-        for edge in edges:
-            src = str(edge.get("from", "")).replace(".", "_").replace("-", "_")
-            tgt = str(edge.get("to", "")).replace(".", "_").replace("-", "_")
+        # Project-to-project references (the dependency_graph builder uses
+        # source/target keys, not from/to)
+        for edge in report.dependency_graph.get("edges", []) or []:
+            src = self._mermaid_id(edge.get("source", ""))
+            tgt = self._mermaid_id(edge.get("target", ""))
             if src and tgt:
                 lines.append(f"    {src} --> {tgt}")
 
@@ -409,6 +410,177 @@ class CrawlDocGenerator:
 
         return "\n".join(parts)
 
+    def _section_sequence_flows(self, report: CrawlReport) -> str:
+        """Per-domain sequence diagrams showing how components interact at runtime.
+
+        For each business domain that has any inbound endpoints OR outbound
+        contracts, render a Mermaid sequenceDiagram with:
+          Client → Controllers (grouped) → outbound services (http/rabbit/grpc/...)
+          Consumers ← MessageBus (for queue-driven flows)
+        Falls back to a single solution-wide sequence if no business domains
+        were discovered (deep_analysis disabled).
+        """
+        domains = getattr(report, "business_domains", None) or []
+        contracts = getattr(report, "domain_contracts", None) or []
+
+        # Helpers ---------------------------------------------------------
+        def _safe(s):
+            return (str(s or "").replace('"', "'")).strip() or "?"
+
+        def _alias(prefix, name, used):
+            base = self._mermaid_id(name) or prefix
+            alias = f"{prefix}_{base}"
+            i = 0
+            while alias in used:
+                i += 1
+                alias = f"{prefix}_{base}_{i}"
+            used.add(alias)
+            return alias
+
+        def _diagram_for(title, controllers_in_scope, outbound_in_scope, consumers_in_scope):
+            """Render one sequenceDiagram block."""
+            if not controllers_in_scope and not outbound_in_scope and not consumers_in_scope:
+                return ""
+            used = set()
+            parts = [f"### {title}", "```mermaid", "sequenceDiagram", "    autonumber"]
+            client_alias = _alias("Client", "ext", used)
+            parts.append(f'    actor {client_alias} as "Client"')
+
+            # Controllers as participants
+            ctrl_aliases = {}
+            for ctrl_name in sorted(controllers_in_scope):
+                alias = _alias("Ctrl", ctrl_name, used)
+                ctrl_aliases[ctrl_name] = alias
+                parts.append(f'    participant {alias} as "{_safe(ctrl_name)}"')
+
+            # Outbound services (target_service grouped by transport)
+            ext_aliases = {}
+            for tgt, transport in sorted(outbound_in_scope):
+                key = (tgt, transport)
+                if key in ext_aliases:
+                    continue
+                alias = _alias("Ext", f"{tgt}_{transport}", used)
+                ext_aliases[key] = alias
+                label = f"{_safe(tgt)} ({transport})" if transport else _safe(tgt)
+                parts.append(f'    participant {alias} as "{label}"')
+
+            # Message bus / consumers (queue-driven flows)
+            bus_alias = None
+            consumer_aliases = {}
+            if consumers_in_scope:
+                bus_alias = _alias("Bus", "messagebus", used)
+                parts.append(f'    participant {bus_alias} as "Message Bus"')
+                for c in sorted(consumers_in_scope, key=lambda x: x[0]):
+                    cons_class, msg_type = c
+                    alias = _alias("Cons", cons_class, used)
+                    consumer_aliases[c] = alias
+                    parts.append(f'    participant {alias} as "{_safe(cons_class)}"')
+
+            # Interactions: Client → each controller → each outbound
+            for ctrl_name in sorted(controllers_in_scope):
+                ctrl_alias = ctrl_aliases[ctrl_name]
+                ep_count = controllers_in_scope[ctrl_name]
+                parts.append(
+                    f'    {client_alias}->>{ctrl_alias}: HTTP request '
+                    f'({ep_count} endpoint{"s" if ep_count != 1 else ""})'
+                )
+                # All outbound from this scope go through the controller
+                for (tgt, transport), ext_alias in ext_aliases.items():
+                    arrow = "->>"  # solid for sync, dashed for async
+                    note = transport or "call"
+                    if transport.lower() in ("rabbitmq", "kafka", "queue"):
+                        arrow = "-->>"  # async
+                    parts.append(f'    {ctrl_alias}{arrow}{ext_alias}: {note}')
+                    if arrow == "->>":
+                        parts.append(f'    {ext_alias}-->>{ctrl_alias}: response')
+                parts.append(f'    {ctrl_alias}-->>{client_alias}: HTTP response')
+
+            # Consumers: Bus → Consumer
+            for (cons_class, msg_type), cons_alias in consumer_aliases.items():
+                parts.append(f'    {bus_alias}-->>{cons_alias}: {_safe(msg_type)}')
+                parts.append(f'    {cons_alias}->>{cons_alias}: handle({_safe(msg_type)})')
+
+            parts.append("```")
+            return "\n".join(parts)
+
+        sections = ["## Sequence Flows\n",
+                    "End-to-end runtime interactions discovered by joining "
+                    "controllers, DI'd named clients, configured service URLs, "
+                    "and message consumers. One diagram per business domain.\n"]
+
+        any_diagram = False
+
+        if domains:
+            # Build per-domain views
+            # Map controller name → endpoint count (per domain)
+            for d in domains:
+                domain_projects = set(d.projects or [])
+                controllers_in_scope = defaultdict(int)
+                for ep in report.endpoints:
+                    # Heuristic: attribute endpoint to a domain via the project
+                    # whose source folder matches its file path.
+                    file_path = (ep.file or "")
+                    matched = any(p in file_path for p in domain_projects)
+                    if matched and ep.controller:
+                        controllers_in_scope[ep.controller] += 1
+                # Outbound: domain_contracts whose source matches this domain
+                outbound = set()
+                for c in contracts:
+                    src_dom = getattr(c, "source_domain", "") or ""
+                    src_proj = getattr(c, "source_project", "") or ""
+                    if src_dom == d.name or src_proj in domain_projects:
+                        outbound.add(
+                            (getattr(c, "target_service", "") or "?",
+                             getattr(c, "transport", "") or "")
+                        )
+                # Consumers attached to projects in this domain
+                consumers_in_scope = []
+                for c in report.consumers:
+                    if any(p in (c.file or "") for p in domain_projects):
+                        consumers_in_scope.append((c.consumer_class, c.message_type))
+
+                diag = _diagram_for(
+                    f"Domain — {d.name}",
+                    controllers_in_scope,
+                    outbound,
+                    consumers_in_scope,
+                )
+                if diag:
+                    sections.append(diag)
+                    any_diagram = True
+        else:
+            # Fallback: one solution-wide diagram
+            controllers_in_scope = defaultdict(int)
+            for ep in report.endpoints:
+                if ep.controller:
+                    controllers_in_scope[ep.controller] += 1
+            outbound = set()
+            for c in contracts:
+                outbound.add(
+                    (getattr(c, "target_service", "") or "?",
+                     getattr(c, "transport", "") or "")
+                )
+            # If no contracts, fall back to integrations
+            if not outbound:
+                for i in report.integrations:
+                    outbound.add((i.target or i.type, i.type))
+            consumers_in_scope = [
+                (c.consumer_class, c.message_type) for c in report.consumers
+            ]
+            diag = _diagram_for(
+                "Solution-wide Flow",
+                controllers_in_scope,
+                outbound,
+                consumers_in_scope,
+            )
+            if diag:
+                sections.append(diag)
+                any_diagram = True
+
+        if not any_diagram:
+            return ""
+        return "\n\n".join(sections)
+
     def _section_domain_contracts(self, report: CrawlReport) -> str:
         contracts = getattr(report, "domain_contracts", None) or []
         if not contracts:
@@ -561,24 +733,124 @@ class CrawlDocGenerator:
 
         return "\n".join(parts)
 
-    def _section_dependency_graph(self, report: CrawlReport) -> str:
-        nodes = report.dependency_graph.get("nodes", [])
-        edges = report.dependency_graph.get("edges", [])
+    @staticmethod
+    def _mermaid_id(name: str) -> str:
+        """Sanitize an arbitrary string into a Mermaid-safe node id."""
+        if not name:
+            return ""
+        return (
+            str(name)
+            .replace(".", "_")
+            .replace("-", "_")
+            .replace(" ", "_")
+            .replace("/", "_")
+            .replace("\\", "_")
+        )
 
-        if not nodes and not edges:
+    def _section_dependency_graph(self, report: CrawlReport) -> str:
+        # Pull nodes from the crawler's dependency_graph if present, otherwise
+        # synthesize them from report.projects so the section never silently
+        # disappears.
+        raw_nodes = report.dependency_graph.get("nodes") or []
+        raw_edges = report.dependency_graph.get("edges") or []
+
+        # _build_dependency_graph emits nodes as {"id": name, "layer": layer}
+        # but earlier callers may pass plain strings — handle both shapes.
+        node_layer = {}
+        for n in raw_nodes:
+            if isinstance(n, dict):
+                nid = n.get("id", "")
+                if nid:
+                    node_layer[nid] = n.get("layer", "Unknown") or "Unknown"
+            elif isinstance(n, str):
+                node_layer[n] = "Unknown"
+        # Fallback / augmentation from project list
+        for p in report.projects:
+            if p.name and p.name not in node_layer:
+                node_layer[p.name] = p.layer or "Unknown"
+
+        # Project → project references (compile-time)
+        ref_edges = []
+        for e in raw_edges:
+            if not isinstance(e, dict):
+                continue
+            src = e.get("source") or e.get("from") or ""
+            tgt = e.get("target") or e.get("to") or ""
+            if src and tgt:
+                ref_edges.append((src, tgt))
+
+        # Cross-service runtime contracts (HTTP/RabbitMQ/etc.) discovered by
+        # the deep analyzer — overlay as dotted edges so the user sees the
+        # actual runtime topology, not just .csproj references.
+        contract_edges = []
+        for c in getattr(report, "domain_contracts", None) or []:
+            src = getattr(c, "source_project", "") or getattr(c, "source_domain", "")
+            tgt = getattr(c, "target_service", "")
+            transport = getattr(c, "transport", "") or ""
+            if src and tgt:
+                contract_edges.append((src, tgt, transport))
+
+        if not node_layer and not ref_edges and not contract_edges:
             return ""
 
-        lines = ["## Dependency Graph\n", "```mermaid", "graph LR"]
+        # Group nodes by layer for visual subgraphs
+        by_layer = defaultdict(list)
+        for name, layer in node_layer.items():
+            by_layer[layer].append(name)
 
-        for node in nodes:
-            name = str(node).replace(".", "_").replace("-", "_")
-            lines.append(f"    {name}[\"{node}\"]")
+        lines = [
+            "## Dependency Graph\n",
+            "Compile-time references are solid arrows. Runtime cross-service "
+            "contracts (HTTP / RabbitMQ / gRPC etc.) discovered by the deep "
+            "analyzer are dotted arrows.\n",
+            "```mermaid",
+            "graph LR",
+        ]
 
-        for edge in edges:
-            src = str(edge.get("from", "")).replace(".", "_").replace("-", "_")
-            tgt = str(edge.get("to", "")).replace(".", "_").replace("-", "_")
-            if src and tgt:
-                lines.append(f"    {src} --> {tgt}")
+        # Subgraphs by layer
+        for layer in sorted(by_layer.keys()):
+            safe_layer = self._mermaid_id(layer) or "Unknown"
+            lines.append(f'    subgraph layer_{safe_layer}["{layer}"]')
+            for name in sorted(by_layer[layer]):
+                nid = self._mermaid_id(name)
+                lines.append(f'        {nid}["{name}"]')
+            lines.append("    end")
+
+        # Make sure every contract endpoint also has a node, even if it
+        # doesn't appear in the project list (external services).
+        for src, tgt, _ in contract_edges:
+            for n in (src, tgt):
+                if n and n not in node_layer:
+                    nid = self._mermaid_id(n)
+                    lines.append(f'    {nid}(["{n}"])')
+                    node_layer[n] = "External"
+
+        # Compile-time edges
+        for src, tgt in ref_edges:
+            s = self._mermaid_id(src)
+            t = self._mermaid_id(tgt)
+            if s and t:
+                lines.append(f"    {s} --> {t}")
+
+        # Runtime contract edges (dotted, labeled by transport)
+        for src, tgt, transport in contract_edges:
+            s = self._mermaid_id(src)
+            t = self._mermaid_id(tgt)
+            if s and t:
+                label = f"|{transport}|" if transport else ""
+                lines.append(f"    {s} -.->{label} {t}")
 
         lines.append("```")
+
+        # Append a textual edge list for accessibility / when Mermaid fails
+        if ref_edges or contract_edges:
+            lines.append("\n### Edges\n")
+            lines.append("| Source | Target | Kind |")
+            lines.append("|--------|--------|------|")
+            for src, tgt in ref_edges:
+                lines.append(f"| {src} | {tgt} | reference |")
+            for src, tgt, transport in contract_edges:
+                kind = f"contract ({transport})" if transport else "contract"
+                lines.append(f"| {src} | {tgt} | {kind} |")
+
         return "\n".join(lines)
