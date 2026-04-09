@@ -4,26 +4,35 @@ import re
 import streamlit as st
 
 
-# ── Carbon Design Tokens ──
-CARBON_BLUE_60 = "#0f62fe"
-CARBON_GRAY_100 = "#161616"
-CARBON_GRAY_70 = "#525252"
-CARBON_GRAY_20 = "#e0e0e0"
-CARBON_GRAY_10 = "#f4f4f4"
-CARBON_RED_60 = "#da1e28"
-CARBON_GREEN_60 = "#24a148"
-CARBON_YELLOW_30 = "#f1c21b"
+# ── Carbon Design Tokens (re-exported from theme.py for back-compat) ──
+from src.ui.theme import (
+    BLUE as CARBON_BLUE_60,
+    INK as CARBON_GRAY_100,
+    INK_SOFT as CARBON_GRAY_70,
+    LINE as CARBON_GRAY_20,
+    BG_TINT as CARBON_GRAY_10,
+    BG_SOFT,
+    SOFT_BLUE,
+    BLUE_GHOST,
+    RED as CARBON_RED_60,
+    GREEN as CARBON_GREEN_60,
+    YELLOW as CARBON_YELLOW_30,
+    FONT_FAMILY as CARBON_FONT,
+    RADIUS_SM,
+    RADIUS_MD,
+    SHADOW_SOFT,
+)
+
 CARBON_TEAL_60 = "#009d9a"
 CARBON_PURPLE_60 = "#8a3ffc"
-CARBON_FONT = "'IBM Plex Sans', sans-serif"
 
 
 def render_carbon_tag(label: str, color: str = CARBON_BLUE_60, text_color: str = "#fff") -> str:
     """Return HTML for an inline Carbon-style tag (does NOT call st.markdown)."""
     return (
-        f'<span style="background:{color} !important;color:{text_color} !important;padding:2px 10px;'
-        f'font-size:0.75rem;font-family:{CARBON_FONT};'
-        f'display:inline-block;margin:2px 2px;">{label}</span>'
+        f'<span style="background:{color} !important;color:{text_color} !important;padding:3px 10px;'
+        f'font-size:0.75rem;font-family:{CARBON_FONT};font-weight:500;'
+        f'display:inline-block;margin:2px 2px;border-radius:10px;">{label}</span>'
     )
 
 
@@ -38,8 +47,9 @@ def render_carbon_notification(message: str, kind: str = "info"):
     border_color, bg_color, icon = configs.get(kind, configs["info"])
     st.markdown(
         f'<div style="background:{bg_color};border-left:4px solid {border_color};'
-        f'padding:12px 16px;margin:8px 0;font-family:{CARBON_FONT};'
-        f'font-size:0.875rem;">{icon} {message}</div>',
+        f'border-radius:{RADIUS_MD};padding:12px 16px;margin:8px 0;'
+        f'font-family:{CARBON_FONT};font-size:0.875rem;'
+        f'box-shadow:{SHADOW_SOFT};">{icon} {message}</div>',
         unsafe_allow_html=True,
     )
 
@@ -104,8 +114,10 @@ def render_sources(sources: list):
             service_info = f'<span style="color:{CARBON_GRAY_70};font-size:0.75rem;">{service}</span>' if service else ""
 
             st.markdown(
-                f'<div style="background:{CARBON_GRAY_10};border-left:3px solid {CARBON_BLUE_60};'
-                f'padding:10px 14px;margin:4px 0;font-family:{CARBON_FONT};">'
+                f'<div style="background:{BG_SOFT};border:1px solid {SOFT_BLUE};'
+                f'border-left:3px solid {CARBON_BLUE_60};border-radius:{RADIUS_MD};'
+                f'padding:10px 14px;margin:6px 0;font-family:{CARBON_FONT};'
+                f'box-shadow:{SHADOW_SOFT};">'
                 f'<div style="display:flex;justify-content:space-between;align-items:center;">'
                 f'<strong style="font-size:0.875rem;">{i}. {file_path}</strong>'
                 f'{score_tag}</div>'
@@ -122,9 +134,9 @@ def render_confidence_badge(confidence: str):
     color = colors.get(confidence, CARBON_GRAY_70)
     text_color = text_colors.get(confidence, "#fff")
     st.markdown(
-        f'<span style="background:{color};color:{text_color};padding:2px 10px;'
-        f'font-size:0.75rem;font-family:{CARBON_FONT};display:inline-block;'
-        f'margin:4px 0;">{confidence.upper()}</span>',
+        f'<span style="background:{color};color:{text_color};padding:3px 12px;'
+        f'font-size:0.75rem;font-family:{CARBON_FONT};font-weight:500;display:inline-block;'
+        f'margin:4px 0;border-radius:10px;">{confidence.upper()}</span>',
         unsafe_allow_html=True,
     )
 
