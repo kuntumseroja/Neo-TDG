@@ -55,7 +55,7 @@ class CrawlDocGenerator:
 
         def _mc(w, h, text, **kwargs):
             """multi_cell wrapper that always resets X to left margin."""
-            pdf.multi_cell(w, h, text, new_x=XPos.LMARGIN, new_y=YPos.NEXT, **kwargs)
+            pdf.multi_cell(w, h, self._ascii_safe(text), new_x=XPos.LMARGIN, new_y=YPos.NEXT, **kwargs)
 
         lines = markdown_content.split("\n")
         in_code_block = False
@@ -79,7 +79,7 @@ class CrawlDocGenerator:
                 text = line.rstrip()
                 if len(text) > 120:
                     text = text[:120] + "..."
-                pdf.cell(0, 4, text, new_x=XPos.LMARGIN, new_y=YPos.NEXT, fill=True)
+                pdf.cell(0, 4, self._ascii_safe(text), new_x=XPos.LMARGIN, new_y=YPos.NEXT, fill=True)
                 continue
 
             # Table rows
@@ -174,13 +174,45 @@ class CrawlDocGenerator:
 
         pdf.ln(3)
 
+    # Unicode chars not representable in fpdf2's built-in latin-1 helvetica.
+    # Keep this list narrow — anything else falls back to "?".
+    _PDF_UNICODE_MAP = {
+        "\u2014": "-",   # em dash
+        "\u2013": "-",   # en dash
+        "\u2212": "-",   # minus
+        "\u2192": "->",  # right arrow
+        "\u2190": "<-",  # left arrow
+        "\u2194": "<->",
+        "\u21d2": "=>",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2026": "...", # ellipsis
+        "\u00a0": " ",   # nbsp
+        "\u2022": "*",   # bullet
+        "\u2705": "[x]",
+        "\u274c": "[ ]",
+    }
+
+    def _ascii_safe(self, text: str) -> str:
+        """Replace common unicode punctuation/arrows with ASCII so fpdf2's
+        built-in helvetica (latin-1) doesn't blow up. Anything still
+        outside latin-1 is replaced with '?'."""
+        if not text:
+            return text
+        for u, a in self._PDF_UNICODE_MAP.items():
+            if u in text:
+                text = text.replace(u, a)
+        return text.encode("latin-1", errors="replace").decode("latin-1")
+
     def _clean_md(self, text: str) -> str:
         """Remove markdown formatting from text."""
         text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
         text = re.sub(r"\*(.+?)\*", r"\1", text)
         text = re.sub(r"`(.+?)`", r"\1", text)
         text = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", text)
-        return text
+        return self._ascii_safe(text)
 
     # ── Markdown Section Builders ──────────────────────────────────────
 
