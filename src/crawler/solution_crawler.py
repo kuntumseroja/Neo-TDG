@@ -16,6 +16,7 @@ from src.crawler.config_analyzer import scan_project_configs
 from src.crawler.dependency_extractor import scan_project_di
 from src.crawler.code_analyzer import scan_project_symbols
 from src.crawler.domain_mapper import build_domain_map
+from src.crawler.ui_crawler import discover_ui_components
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +65,13 @@ class SolutionCrawler:
         self._deep_enabled = bool(deep.get("enabled", False))
         self._deep_hints = deep.get("domain_hints", {}) or {}
 
-    def crawl(self, sln_path: str, progress_callback=None) -> CrawlReport:
+    def crawl(self, sln_path: str, progress_callback=None, angular_path: str = "") -> CrawlReport:
         """
         Starting from .sln, discover all projects and their components.
+
+        If `angular_path` is provided (or `angular.json` is auto-discovered
+        anywhere under the solution directory), Angular components are
+        crawled and merged into `report.ui_components`.
         """
         sln_file = Path(sln_path)
 
@@ -149,6 +154,29 @@ class SolutionCrawler:
         # Build dependency graph
         report.dependency_graph = self._build_dependency_graph(report.projects)
 
+        # Angular front-end discovery (explicit path wins; otherwise
+        # auto-detect any angular.json under the solution directory).
+        ng_roots = []
+        if angular_path:
+            ng_roots.append(Path(angular_path))
+        else:
+            try:
+                for ng_json in sln_dir.rglob("angular.json"):
+                    parts_lower = [p.lower() for p in ng_json.parts]
+                    if any(skip in parts_lower for skip in ["node_modules", "bin", "obj", ".git"]):
+                        continue
+                    ng_roots.append(ng_json.parent)
+            except Exception as e:
+                logger.warning(f"Angular auto-detect failed: {e}")
+        for ng_root in ng_roots:
+            try:
+                ui = discover_ui_components(str(ng_root))
+                if ui:
+                    report.ui_components.extend(ui)
+                    logger.info(f"Angular: discovered {len(ui)} components in {ng_root}")
+            except Exception as e:
+                logger.warning(f"Angular crawl failed for {ng_root}: {e}")
+
         # Deep analysis: cluster projects/symbols into business domains and
         # derive cross-domain contracts.
         if self._deep_enabled:
@@ -160,7 +188,8 @@ class SolutionCrawler:
         logger.info(
             f"Crawl complete: {len(report.projects)} projects, "
             f"{len(report.endpoints)} endpoints, {len(report.consumers)} consumers, "
-            f"{len(report.schedulers)} schedulers, {len(report.integrations)} integrations"
+            f"{len(report.schedulers)} schedulers, {len(report.integrations)} integrations, "
+            f"{len(report.ui_components)} ui components"
             + (
                 f", {len(report.business_domains)} domains, {len(report.domain_contracts)} contracts"
                 if self._deep_enabled

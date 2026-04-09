@@ -36,6 +36,7 @@ class CrawlDocGenerator:
             self._section_schedulers(report),
             self._section_integrations(report),
             self._section_data_models(report),
+            self._section_ui_components(report),
             self._section_dependency_graph(report),
         ]
         return "\n\n".join(s for s in sections if s)
@@ -252,6 +253,7 @@ class CrawlDocGenerator:
             f"| Scheduled Jobs | {len(report.schedulers)} |\n"
             f"| External Integrations | {len(report.integrations)} |\n"
             f"| Data Models | {len(report.data_models)} |\n"
+            f"| Angular UI Components | {len(report.ui_components)} |\n"
             f"| Configuration Keys | {total_configs} |\n"
             f"| DI Registrations | {total_di} |\n"
             f"| Code Symbols | {total_symbols} |\n"
@@ -381,6 +383,90 @@ class CrawlDocGenerator:
             parts.append("|--------|--------|----------|------|")
             for i in by_type[itype]:
                 parts.append(f"| {i.source_service} | {i.target} | {i.contract} | {i.file} |")
+
+        return "\n".join(parts)
+
+    def _section_ui_components(self, report: CrawlReport) -> str:
+        """Angular front-end inventory: components, modules, routes, API
+        calls, plus a Mermaid graph wiring components to the back-end
+        endpoints they hit."""
+        ui = report.ui_components or []
+        if not ui:
+            return ""
+
+        # Group by module for the table
+        by_module = defaultdict(list)
+        for c in ui:
+            by_module[c.module or "(root)"].append(c)
+
+        parts = [
+            "## Angular Front-End\n",
+            f"Total: **{len(ui)}** components across **{len(by_module)}** modules.\n",
+            "| Module | Component | Selector | Routes | API Calls | File |",
+            "|--------|-----------|----------|--------|-----------|------|",
+        ]
+        for module in sorted(by_module.keys()):
+            for c in sorted(by_module[module], key=lambda x: x.name):
+                routes = ", ".join(c.routes[:3]) or "-"
+                if len(c.routes) > 3:
+                    routes += f" (+{len(c.routes) - 3})"
+                api_calls = ", ".join(f"`{a}`" for a in c.api_calls[:3]) or "-"
+                if len(c.api_calls) > 3:
+                    api_calls += f" (+{len(c.api_calls) - 3})"
+                parts.append(
+                    f"| {module} | **{c.name}** | `{c.selector or '-'}` | "
+                    f"{routes} | {api_calls} | {c.component_file} |"
+                )
+
+        # Wiring diagram: Component → API path → backend Controller
+        # Build endpoint → controller lookup keyed by route fragment.
+        ep_lookup = []
+        for ep in report.endpoints:
+            route = (ep.route or "").strip("/").lower()
+            if route:
+                ep_lookup.append((route, ep.controller, ep.method))
+
+        diag_lines = ["```mermaid", "graph LR"]
+        seen_nodes = set()
+        edges = []
+        for c in ui:
+            if not c.api_calls:
+                continue
+            comp_id = self._mermaid_id(c.name)
+            if comp_id not in seen_nodes:
+                diag_lines.append(f'    {comp_id}["{c.name}"]')
+                seen_nodes.add(comp_id)
+            for call in c.api_calls[:5]:
+                call_norm = call.strip("/").lower()
+                if not call_norm:
+                    continue
+                # Match against endpoints by suffix containment.
+                matched_ctrl = None
+                for ep_route, ep_ctrl, _ep_method in ep_lookup:
+                    if ep_route and (ep_route in call_norm or call_norm in ep_route):
+                        matched_ctrl = ep_ctrl
+                        break
+                if matched_ctrl:
+                    ctrl_id = self._mermaid_id(matched_ctrl)
+                    if ctrl_id not in seen_nodes:
+                        diag_lines.append(f'    {ctrl_id}(["{matched_ctrl}"])')
+                        seen_nodes.add(ctrl_id)
+                    edges.append(f"    {comp_id} -->|{self._ascii_safe(call)[:30]}| {ctrl_id}")
+                else:
+                    # Unmatched call: render as a leaf node so the user
+                    # still sees the outbound dependency.
+                    leaf_id = self._mermaid_id(call_norm)[:20] or "ext"
+                    leaf_id = f"ext_{leaf_id}"
+                    if leaf_id not in seen_nodes:
+                        diag_lines.append(f'    {leaf_id}[/"{self._ascii_safe(call)[:40]}"/]')
+                        seen_nodes.add(leaf_id)
+                    edges.append(f"    {comp_id} --> {leaf_id}")
+        diag_lines.extend(edges)
+        diag_lines.append("```")
+
+        if edges:
+            parts.append("\n### UI → API Wiring\n")
+            parts.extend(diag_lines)
 
         return "\n".join(parts)
 

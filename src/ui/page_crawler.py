@@ -140,6 +140,16 @@ def render_solution_crawler():
                 source_label = f"GitHub ({gh_url})"
                 st.caption(f"Will crawl: `{sln_path}`")
 
+    # Optional Angular front-end path. If left empty, the crawler
+    # auto-detects any angular.json under the solution directory (works
+    # for monorepos that ship the SPA next to the .sln).
+    angular_path = st.text_input(
+        "Angular front-end path (optional)",
+        placeholder="auto-detect from solution dir, or e.g. /path/to/web-ui",
+        key="ng_path",
+        help="Leave blank to auto-detect angular.json under the solution directory.",
+    )
+
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Crawl Solution", type="primary", disabled=not sln_path):
@@ -152,14 +162,19 @@ def render_solution_crawler():
                     status_text.text(f"Processing: {name}")
 
                 try:
-                    report = crawler.crawl(sln_path, progress_callback=progress_cb)
+                    report = crawler.crawl(
+                        sln_path,
+                        progress_callback=progress_cb,
+                        angular_path=angular_path or "",
+                    )
                     progress_bar.progress(1.0)
                     st.session_state.last_crawl_report = report
                     st.success(
                         f"Crawled {len(report.projects)} projects, "
                         f"{len(report.endpoints)} endpoints, "
                         f"{len(report.consumers)} consumers, "
-                        f"{len(report.schedulers)} schedulers"
+                        f"{len(report.schedulers)} schedulers, "
+                        f"{len(report.ui_components)} UI components"
                     )
 
                     # Generate documentation
