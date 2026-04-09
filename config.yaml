@@ -48,6 +48,22 @@ crawler:
     - "IConsulClient"
     - "IAmazonS3"
 
+  # === Deep Code & Configuration Analysis (opt-in) ===
+  # When enabled, the crawler additionally extracts:
+  #   - appsettings.json / launchSettings.json / *.config (config_analyzer)
+  #   - DI registrations from Startup.cs / Program.cs (dependency_extractor)
+  #   - C# type symbols + DDD heuristics (code_analyzer)
+  #   - Business domain clusters + cross-domain contracts (domain_mapper)
+  # All output is additive — existing crawl fields are unchanged.
+  deep_analysis:
+    enabled: true
+    # Optional explicit project-prefix → domain mapping. Wins over the
+    # default name-based clustering. Example:
+    #   domain_hints:
+    #     Invoicing: ["CoreTax.Invoicing", "CoreTax.Billing"]
+    #     Taxpayer:  ["CoreTax.Taxpayer", "CoreTax.Identity"]
+    domain_hints: {}
+
 # === API Server ===
 api:
   host: "0.0.0.0"
