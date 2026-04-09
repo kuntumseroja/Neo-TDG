@@ -12,6 +12,10 @@ from src.models.crawler import (
 )
 from src.crawler.scheduler_discovery import discover_schedulers
 from src.crawler.integration_discovery import discover_integrations
+from src.crawler.config_analyzer import scan_project_configs
+from src.crawler.dependency_extractor import scan_project_di
+from src.crawler.code_analyzer import scan_project_symbols
+from src.crawler.domain_mapper import build_domain_map
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,9 @@ class SolutionCrawler:
     def __init__(self, config: dict = None):
         self.config = config or {}
         self._scan_depth = self.config.get("scan_depth", 10)
+        deep = self.config.get("deep_analysis", {}) or {}
+        self._deep_enabled = bool(deep.get("enabled", False))
+        self._deep_hints = deep.get("domain_hints", {}) or {}
 
     def crawl(self, sln_path: str, progress_callback=None) -> CrawlReport:
         """
@@ -91,6 +98,25 @@ class SolutionCrawler:
                 continue
 
             project_info = self._crawl_project(csproj_path, entry["name"])
+
+            # Deep analysis (opt-in via crawler.deep_analysis.enabled)
+            if self._deep_enabled:
+                project_dir_for_deep = csproj_path.parent
+                try:
+                    project_info.configurations = scan_project_configs(
+                        project_dir_for_deep, project_name=entry["name"]
+                    )
+                    project_info.di_registrations = scan_project_di(
+                        project_dir_for_deep, project_name=entry["name"]
+                    )
+                    project_info.code_symbols = scan_project_symbols(
+                        project_dir_for_deep, project_name=entry["name"]
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Deep analysis failed for {entry['name']}: {e}"
+                    )
+
             report.projects.append(project_info)
 
             # Gather C# files from project directory
@@ -123,10 +149,23 @@ class SolutionCrawler:
         # Build dependency graph
         report.dependency_graph = self._build_dependency_graph(report.projects)
 
+        # Deep analysis: cluster projects/symbols into business domains and
+        # derive cross-domain contracts.
+        if self._deep_enabled:
+            try:
+                build_domain_map(report, hints=self._deep_hints)
+            except Exception as e:
+                logger.warning(f"Domain mapping failed: {e}")
+
         logger.info(
             f"Crawl complete: {len(report.projects)} projects, "
             f"{len(report.endpoints)} endpoints, {len(report.consumers)} consumers, "
             f"{len(report.schedulers)} schedulers, {len(report.integrations)} integrations"
+            + (
+                f", {len(report.business_domains)} domains, {len(report.domain_contracts)} contracts"
+                if self._deep_enabled
+                else ""
+            )
         )
         return report
 

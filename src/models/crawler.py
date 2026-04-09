@@ -4,6 +4,14 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 from datetime import datetime
 
+from src.models.domain import (
+    ConfigurationNode,
+    DIRegistration,
+    CodeSymbol,
+    DomainContract,
+    BusinessDomain,
+)
+
 
 class PackageRef(BaseModel):
     """NuGet or npm package reference."""
@@ -19,6 +27,10 @@ class ProjectInfo(BaseModel):
     framework: str = ""
     references: List[str] = Field(default_factory=list)  # Inter-project references
     nuget_packages: List[PackageRef] = Field(default_factory=list)
+    # Deep-analysis additions (populated only when crawler.deep_analysis.enabled)
+    configurations: List[ConfigurationNode] = Field(default_factory=list)
+    di_registrations: List[DIRegistration] = Field(default_factory=list)
+    code_symbols: List[CodeSymbol] = Field(default_factory=list)
 
 
 class EndpointInfo(BaseModel):
@@ -92,3 +104,6 @@ class CrawlReport(BaseModel):
     ui_components: List[UIComponent] = Field(default_factory=list)
     data_models: List[DataModel] = Field(default_factory=list)
     configuration: Dict = Field(default_factory=dict)
+    # Deep-analysis additions
+    business_domains: List[BusinessDomain] = Field(default_factory=list)
+    domain_contracts: List[DomainContract] = Field(default_factory=list)
