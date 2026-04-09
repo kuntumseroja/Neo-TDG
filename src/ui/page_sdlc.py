@@ -1,7 +1,12 @@
 """SDLC Tools page — Bug Assistant, Test Generator, Architecture Validator."""
 
 import streamlit as st
-from src.ui.components import render_markdown_with_mermaid, render_carbon_tag, render_carbon_notification
+from src.ui.components import (
+    render_markdown_with_mermaid,
+    render_carbon_tag,
+    render_carbon_notification,
+    stage_uploaded_file,
+)
 
 
 def render_sdlc_tools():
@@ -107,6 +112,19 @@ def _render_test_generator():
         placeholder="/path/to/SubmitInvoiceHandler.cs",
         key="test_component_path",
     )
+
+    with st.expander("…or upload a file (PDF / .cs / .md / .txt)", expanded=False):
+        uploaded = st.file_uploader(
+            "Upload component or spec file",
+            type=["cs", "pdf", "md", "txt"],
+            key="test_upload",
+            accept_multiple_files=False,
+        )
+        if uploaded is not None:
+            staged = stage_uploaded_file(uploaded)
+            if staged:
+                component_path = staged
+                st.success(f"Using uploaded **{uploaded.name}** → `{staged}`")
 
     test_type = st.radio(
         "Test Type",

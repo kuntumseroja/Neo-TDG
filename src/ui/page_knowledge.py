@@ -1,7 +1,34 @@
 """Knowledge Store management page."""
 
+import hashlib
+import logging
+
 import streamlit as st
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+def _extract_pdf_text(file_bytes: bytes) -> str:
+    """Extract plain text from a PDF byte buffer using pypdf."""
+    try:
+        from pypdf import PdfReader
+    except ImportError as e:
+        raise RuntimeError(
+            "pypdf is required to ingest PDFs. Install it with `pip install pypdf`."
+        ) from e
+    import io
+    reader = PdfReader(io.BytesIO(file_bytes))
+    pages = []
+    for i, page in enumerate(reader.pages, start=1):
+        try:
+            text = page.extract_text() or ""
+        except Exception as e:
+            logger.warning(f"PDF page {i} extraction failed: {e}")
+            text = ""
+        if text.strip():
+            pages.append(f"## Page {i}\n\n{text.strip()}")
+    return "\n\n".join(pages)
 
 
 def render_knowledge_management():
@@ -47,7 +74,84 @@ def render_knowledge_management():
     # Ingest section
     st.subheader("Ingest Documents")
 
-    tab1, tab2, tab3 = st.tabs(["Markdown Files", "TechDocGen Output", "Rebuild"])
+    tab1, tab_upload, tab2, tab3 = st.tabs(
+        ["Markdown Files", "Upload File (PDF/MD)", "TechDocGen Output", "Rebuild"]
+    )
+
+    with tab_upload:
+        st.caption(
+            "Upload a Markdown or PDF file directly from your machine — "
+            "no path required. PDFs are text-extracted page-by-page via "
+            "`pypdf` and ingested as a single document."
+        )
+        uploaded = st.file_uploader(
+            "Choose a .md or .pdf file",
+            type=["md", "markdown", "txt", "pdf"],
+            key="kb_upload_file",
+            accept_multiple_files=False,
+        )
+        u_col1, u_col2 = st.columns(2)
+        with u_col1:
+            up_service = st.text_input(
+                "Service Name (optional)", key="kb_upload_service"
+            )
+        with u_col2:
+            up_probis = st.text_input(
+                "Probis Domain (optional)", key="kb_upload_probis"
+            )
+
+        if st.button(
+            "Ingest Uploaded File", type="primary", key="btn_kb_upload_ingest"
+        ):
+            if not uploaded:
+                st.error("Please choose a file to upload first.")
+            else:
+                try:
+                    raw = uploaded.getvalue()
+                    name = uploaded.name
+                    suffix = Path(name).suffix.lower()
+                    with st.spinner(f"Extracting and ingesting {name}..."):
+                        if suffix == ".pdf":
+                            content = _extract_pdf_text(raw)
+                            doc_kind = "uploaded_pdf"
+                        else:
+                            content = raw.decode("utf-8", errors="ignore")
+                            doc_kind = "uploaded_markdown"
+
+                        if not content.strip():
+                            st.error(
+                                "No extractable text in the file. "
+                                "Scanned PDFs (image-only) need OCR first."
+                            )
+                        else:
+                            metadata = {
+                                "source_file": name,
+                                "doc_kind": doc_kind,
+                            }
+                            if up_service:
+                                metadata["service_name"] = up_service
+                            if up_probis:
+                                metadata["probis_domain"] = up_probis
+
+                            doc_id = hashlib.md5(
+                                f"{name}:{len(raw)}".encode()
+                            ).hexdigest()
+                            chunks = pipeline.store.ingest_document(
+                                content, metadata, doc_id
+                            )
+                            st.success(
+                                f"Ingested **{name}** "
+                                f"({len(content):,} chars) → "
+                                f"**{chunks}** chunks created."
+                            )
+                            with st.expander("Preview extracted text", expanded=False):
+                                st.text(
+                                    content[:4000]
+                                    + ("\n\n... (truncated)" if len(content) > 4000 else "")
+                                )
+                except Exception as e:
+                    logger.exception("Upload ingest failed")
+                    st.error(f"Ingest failed: {e}")
 
     with tab1:
         ingest_path = st.text_input(

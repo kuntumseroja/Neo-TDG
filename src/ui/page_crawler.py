@@ -12,7 +12,7 @@ from typing import Optional
 import hashlib
 
 import streamlit as st
-from src.ui.components import render_mermaid, render_carbon_tag
+from src.ui.components import render_mermaid, render_carbon_tag, render_markdown_with_mermaid
 from src.crawler.doc_generator import CrawlDocGenerator
 from src.crawler.code_doc_generator import CodeDocGenerator
 
@@ -183,7 +183,7 @@ def render_solution_crawler():
 
                     # Generate documentation
                     try:
-                        doc_gen = CrawlDocGenerator()
+                        doc_gen = CrawlDocGenerator(llm=st.session_state.get("llm"))
                         md_content = doc_gen.generate_markdown(report)
                         st.session_state.crawl_md_report = md_content
                         try:
@@ -240,6 +240,14 @@ def render_solution_crawler():
                     mime="application/pdf",
                 )
 
+        if md_report:
+            with st.expander("Preview Technical Documentation", expanded=False):
+                st.caption(
+                    f"{len(md_report):,} characters - mermaid diagrams render "
+                    "inline below."
+                )
+                render_markdown_with_mermaid(md_report)
+
     # ── Code Documentation Generator ──────────────────────────────
     # Doxygen-style per-symbol API reference for every C# and
     # Angular/TypeScript file in the crawled solution. Builds on top of
@@ -259,7 +267,7 @@ def render_solution_crawler():
             if st.button("Generate Code Documentation", type="primary"):
                 with st.spinner("Walking source files and extracting symbols..."):
                     try:
-                        cdg = CodeDocGenerator()
+                        cdg = CodeDocGenerator(llm=st.session_state.get("llm"))
                         cd_md = cdg.generate_markdown(st.session_state.last_crawl_report)
                         st.session_state.code_doc_md = cd_md
                         try:
@@ -332,6 +340,14 @@ def render_solution_crawler():
                         mime="application/pdf",
                         key="dl_code_doc_pdf",
                     )
+
+            if cd_md:
+                with st.expander("Preview Code Documentation", expanded=False):
+                    st.caption(
+                        f"{len(cd_md):,} characters - per-symbol API reference "
+                        "with function explanations."
+                    )
+                    render_markdown_with_mermaid(cd_md)
 
     # Display results
     report = st.session_state.get("last_crawl_report")

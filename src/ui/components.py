@@ -1,7 +1,69 @@
 """Shared UI components for Streamlit pages — IBM Carbon Design System."""
 
+import io
 import re
+import tempfile
+from pathlib import Path
+
 import streamlit as st
+
+
+def stage_uploaded_file(uploaded_file, allowed_suffixes=(".cs", ".pdf", ".md", ".txt")) -> str:
+    """Persist a Streamlit-uploaded file to a temp path and return the path.
+
+    PDFs are text-extracted via pypdf and written as a sibling `.txt` so the
+    downstream tools (which expect a readable source file on disk) can ingest
+    them just like a code file. Other file types are written through verbatim.
+    Returns an empty string if the file cannot be staged.
+    """
+    if uploaded_file is None:
+        return ""
+
+    name = uploaded_file.name
+    suffix = Path(name).suffix.lower()
+    if suffix not in allowed_suffixes:
+        st.error(f"Unsupported file type: {suffix}")
+        return ""
+
+    raw = uploaded_file.getvalue()
+
+    if suffix == ".pdf":
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            st.error("pypdf is required to upload PDFs. Install with `pip install pypdf`.")
+            return ""
+        try:
+            reader = PdfReader(io.BytesIO(raw))
+            pages = []
+            for i, page in enumerate(reader.pages, start=1):
+                try:
+                    text = page.extract_text() or ""
+                except Exception:
+                    text = ""
+                if text.strip():
+                    pages.append(f"// --- Page {i} ---\n{text.strip()}")
+            extracted = "\n\n".join(pages)
+        except Exception as e:
+            st.error(f"Failed to extract PDF text: {e}")
+            return ""
+        if not extracted.strip():
+            st.error("No extractable text in PDF (scanned/image-only PDFs need OCR).")
+            return ""
+        tmp = tempfile.NamedTemporaryFile(
+            delete=False, suffix=f"_{Path(name).stem}.txt", mode="w", encoding="utf-8"
+        )
+        tmp.write(extracted)
+        tmp.close()
+        return tmp.name
+
+    # Code or text file — write bytes through verbatim
+    tmp = tempfile.NamedTemporaryFile(
+        delete=False, suffix=f"_{Path(name).stem}{suffix}"
+    )
+    tmp.write(raw)
+    tmp.close()
+    return tmp.name
 
 
 # ── Carbon Design Tokens (re-exported from theme.py for back-compat) ──
@@ -64,15 +126,24 @@ def render_carbon_section_header(title: str, subtitle: str = ""):
     st.markdown(html, unsafe_allow_html=True)
 
 
-def render_mermaid(diagram: str):
-    """Render a Mermaid diagram safely."""
+def render_mermaid(diagram: str, height: int = None):
+    """Render a Mermaid diagram safely.
+
+    Height auto-scales with the number of nodes/lines so big diagrams
+    (ER, dependency graphs, sequence flows) don't get clipped to an
+    empty box. Pass `height` explicitly to override.
+    """
     if not diagram or not diagram.strip():
         return
 
     try:
         from streamlit_mermaid import st_mermaid
         clean = _sanitize_mermaid(diagram)
-        st_mermaid(clean, height=400)
+        if height is None:
+            line_count = clean.count("\n") + 1
+            # ~22px per line, clamped between 320 and 1400
+            height = max(320, min(1400, 80 + line_count * 22))
+        st_mermaid(clean, height=height)
     except Exception:
         st.code(diagram, language="mermaid")
 
