@@ -2,7 +2,7 @@
 
 import re
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 import logging
 
 from src.models.crawler import UIComponent
@@ -85,7 +85,7 @@ def discover_ui_components(angular_path: str) -> List[UIComponent]:
     return components
 
 
-def _parse_component(content: str, file_path: Path) -> UIComponent | None:
+def _parse_component(content: str, file_path: Path) -> Optional[UIComponent]:
     """Parse a .component.ts file for component metadata."""
     decorator = _COMPONENT_DECORATOR.search(content)
     if not decorator:

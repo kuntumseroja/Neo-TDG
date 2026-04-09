@@ -129,6 +129,14 @@ THEME_CSS = f"""
         box-shadow: {SHADOW_SOFT} !important;
         transition: all 0.18s ease !important;
     }}
+    /* Force white text on every descendant of a primary button —
+       beats the global [class*="st-"] dark color rule on inner <p>/<div>. */
+    .stButton > button *,
+    .stButton > button p,
+    .stButton > button div,
+    .stButton > button span {{
+        color: #ffffff !important;
+    }}
     .stButton > button:hover {{
         background: linear-gradient(135deg, {BLUE} 0%, {BLUE_DEEP} 100%) !important;
         box-shadow: {SHADOW_HOVER} !important;
@@ -151,6 +159,10 @@ THEME_CSS = f"""
         background: {BG_TINT} !important;
         border-color: {BLUE} !important;
     }}
+    .stButton > button[kind="secondary"] *,
+    button[data-testid="baseButton-secondary"] * {{
+        color: {BLUE} !important;
+    }}
 
     /* Download buttons */
     .stDownloadButton > button {{
@@ -166,6 +178,12 @@ THEME_CSS = f"""
     .stDownloadButton > button:hover {{
         background: #198038 !important;
         box-shadow: {SHADOW_HOVER} !important;
+    }}
+    .stDownloadButton > button *,
+    .stDownloadButton > button p,
+    .stDownloadButton > button div,
+    .stDownloadButton > button span {{
+        color: #ffffff !important;
     }}
 
     /* ── Inputs: light fill, soft-blue underline → deepen on focus ── */
@@ -483,7 +501,7 @@ HEADER_HTML = f"""
             font-weight: {FONT_WEIGHT_REGULAR};
             font-family: {FONT_FAMILY};
             letter-spacing: -0.02em;
-        ">Neo<span style="color: {BLUE}; font-weight: {FONT_WEIGHT_MEDIUM};">-TDG</span></div>
+        ">Lumen<span style="color: {BLUE}; font-weight: {FONT_WEIGHT_MEDIUM};">.AI</span></div>
         <div style="
             color: {INK_SOFT};
             margin: 4px 0 0 0;
@@ -491,7 +509,7 @@ HEADER_HTML = f"""
             font-family: {FONT_FAMILY};
             font-weight: {FONT_WEIGHT_LIGHT};
             letter-spacing: 0.01em;
-        ">SDLC Knowledge Engine &mdash; RAG-Powered Code Intelligence for CoreTax</div>
+        ">SDLC Knowledge Engine &mdash; RAG-Powered Code Intelligence</div>
     </div>
 </div>
 """

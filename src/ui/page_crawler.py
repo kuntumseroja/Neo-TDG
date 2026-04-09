@@ -1,11 +1,60 @@
 """Solution Crawler page."""
 
 import logging
+import shutil
+import subprocess
+import tempfile
+import zipfile
+from pathlib import Path
+from typing import Optional
+
 import streamlit as st
 from src.ui.components import render_mermaid, render_carbon_tag
 from src.crawler.doc_generator import CrawlDocGenerator
 
 logger = logging.getLogger(__name__)
+
+
+def _find_sln_in_dir(root: Path) -> Optional[Path]:
+    """Return the first .sln file found under a directory (rglob)."""
+    matches = sorted(root.rglob("*.sln"))
+    return matches[0] if matches else None
+
+
+def _extract_uploaded_zip(uploaded_file) -> Optional[Path]:
+    """Extract an uploaded ZIP into a temp dir and return the .sln path."""
+    tmp_dir = Path(tempfile.mkdtemp(prefix="lumen_upload_"))
+    zip_path = tmp_dir / uploaded_file.name
+    zip_path.write_bytes(uploaded_file.getvalue())
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(tmp_dir)
+    except zipfile.BadZipFile:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise ValueError("Uploaded file is not a valid ZIP archive.")
+    sln = _find_sln_in_dir(tmp_dir)
+    if not sln:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise FileNotFoundError("No .sln file found inside the uploaded archive.")
+    return sln
+
+
+def _clone_github_repo(url: str, branch: str = "") -> Path:
+    """Shallow-clone a GitHub repo to a temp dir and return the .sln path."""
+    tmp_dir = Path(tempfile.mkdtemp(prefix="lumen_gh_"))
+    cmd = ["git", "clone", "--depth", "1"]
+    if branch.strip():
+        cmd += ["--branch", branch.strip()]
+    cmd += [url.strip(), str(tmp_dir)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if proc.returncode != 0:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise RuntimeError(f"git clone failed: {proc.stderr.strip() or proc.stdout.strip()}")
+    sln = _find_sln_in_dir(tmp_dir)
+    if not sln:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise FileNotFoundError("No .sln file found in the cloned repository.")
+    return sln
 
 
 def render_solution_crawler():
@@ -19,12 +68,77 @@ def render_solution_crawler():
         st.warning("Crawler not initialized.")
         return
 
-    # Input
-    sln_path = st.text_input(
-        "Path to .sln file",
-        placeholder="/path/to/CoreTax.sln",
-        key="sln_path",
+    # Input — three sources: local path, ZIP upload, or GitHub URL
+    src_local, src_upload, src_github = st.tabs(
+        ["Local Path", "Upload Solution (ZIP)", "GitHub Repository"]
     )
+
+    sln_path = ""
+    source_label = ""
+
+    with src_local:
+        local_input = st.text_input(
+            "Path to .sln file (or directory containing one)",
+            placeholder="/path/to/CoreTax.sln",
+            key="sln_path",
+        )
+        if local_input:
+            sln_path = local_input
+            source_label = "local path"
+
+    with src_upload:
+        uploaded = st.file_uploader(
+            "Upload a ZIP archive of your entire .NET solution",
+            type=["zip"],
+            key="sln_upload",
+            help="The ZIP must contain a .sln file (anywhere inside).",
+        )
+        if uploaded is not None:
+            if st.session_state.get("_last_upload_name") != uploaded.name:
+                try:
+                    with st.spinner(f"Extracting {uploaded.name}..."):
+                        extracted_sln = _extract_uploaded_zip(uploaded)
+                    st.session_state["_uploaded_sln_path"] = str(extracted_sln)
+                    st.session_state["_last_upload_name"] = uploaded.name
+                    st.success(f"Extracted: {extracted_sln.name}")
+                except Exception as e:
+                    st.error(f"Upload failed: {e}")
+                    st.session_state["_uploaded_sln_path"] = ""
+            if st.session_state.get("_uploaded_sln_path"):
+                sln_path = st.session_state["_uploaded_sln_path"]
+                source_label = f"uploaded ZIP ({uploaded.name})"
+                st.caption(f"Will crawl: `{sln_path}`")
+
+    with src_github:
+        gh_url = st.text_input(
+            "GitHub repository URL",
+            placeholder="https://github.com/owner/repo.git",
+            key="gh_url",
+        )
+        gh_branch = st.text_input(
+            "Branch (optional)",
+            placeholder="main",
+            key="gh_branch",
+        )
+        if gh_url:
+            cache_key = f"{gh_url}@{gh_branch}"
+            if st.button("Clone Repository", key="gh_clone_btn"):
+                try:
+                    with st.spinner(f"Cloning {gh_url}..."):
+                        cloned_sln = _clone_github_repo(gh_url, gh_branch)
+                    st.session_state["_cloned_sln_path"] = str(cloned_sln)
+                    st.session_state["_last_clone_key"] = cache_key
+                    st.success(f"Cloned. Found solution: {cloned_sln.name}")
+                except Exception as e:
+                    st.error(f"Clone failed: {e}")
+                    st.session_state["_cloned_sln_path"] = ""
+            if (
+                st.session_state.get("_cloned_sln_path")
+                and st.session_state.get("_last_clone_key") == cache_key
+            ):
+                sln_path = st.session_state["_cloned_sln_path"]
+                source_label = f"GitHub ({gh_url})"
+                st.caption(f"Will crawl: `{sln_path}`")
 
     col1, col2 = st.columns(2)
     with col1:

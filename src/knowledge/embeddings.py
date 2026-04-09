@@ -1,7 +1,7 @@
 """Embedding provider abstraction for air-gapped operation."""
 
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Optional
 import logging
 import requests
 
@@ -38,7 +38,7 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self._dimension: int | None = None
+        self._dimension: Optional[int] = None
 
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """Embed a batch of texts via Ollama API."""

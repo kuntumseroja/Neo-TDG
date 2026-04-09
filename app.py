@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Page config
 st.set_page_config(
-    page_title="Neo-TDG | SDLC Knowledge Engine",
+    page_title="Lumen.AI | SDLC Knowledge Engine",
     page_icon="\U0001f9e0",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -210,9 +210,9 @@ if not st.session_state.services_initialized:
 
 # Navigation
 PAGES = {
-    "RAG Chat": "rag_chat",
-    "Knowledge Store": "knowledge",
     "Solution Crawler": "crawler",
+    "Knowledge Store": "knowledge",
+    "RAG Chat": "rag_chat",
     "Flow Explorer": "flows",
     "SDLC Tools": "sdlc",
 }
