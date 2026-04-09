@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -209,7 +210,9 @@ def render_solution_crawler():
                     chunks = pipeline.ingest_crawl_report(st.session_state.last_crawl_report)
                     st.success(f"Ingested crawl report: {chunks} chunks created.")
 
-    # Download buttons
+    # Download buttons. File names always include the project (.sln)
+    # name plus a MM-DD-YYYY timestamp so multiple runs don't overwrite
+    # each other in the user's Downloads folder.
     md_report = st.session_state.get("crawl_md_report")
     pdf_report = st.session_state.get("crawl_pdf_report")
     if md_report or pdf_report:
@@ -219,12 +222,13 @@ def render_solution_crawler():
         file_prefix = "crawl_report"
         if sln_name:
             file_prefix = sln_name.solution.replace("\\", "/").split("/")[-1].replace(".sln", "")
+        timestamp = datetime.now().strftime("%m-%d-%Y")
         with dl_col1:
             if md_report:
                 st.download_button(
                     label="Download MD Report",
                     data=md_report,
-                    file_name=f"{file_prefix}_report.md",
+                    file_name=f"{file_prefix}_report_{timestamp}.md",
                     mime="text/markdown",
                 )
         with dl_col2:
@@ -232,7 +236,7 @@ def render_solution_crawler():
                 st.download_button(
                     label="Download PDF Report",
                     data=pdf_report,
-                    file_name=f"{file_prefix}_report.pdf",
+                    file_name=f"{file_prefix}_report_{timestamp}.pdf",
                     mime="application/pdf",
                 )
 
@@ -309,12 +313,13 @@ def render_solution_crawler():
                     sln_obj.solution.replace("\\", "/").split("/")[-1].replace(".sln", "")
                     + "_code_doc"
                 )
+            cd_ts = datetime.now().strftime("%m-%d-%Y")
             with cd_dl1:
                 if cd_md:
                     st.download_button(
                         label="Download Code Doc (MD)",
                         data=cd_md,
-                        file_name=f"{cd_prefix}.md",
+                        file_name=f"{cd_prefix}_{cd_ts}.md",
                         mime="text/markdown",
                         key="dl_code_doc_md",
                     )
@@ -323,7 +328,7 @@ def render_solution_crawler():
                     st.download_button(
                         label="Download Code Doc (PDF)",
                         data=cd_pdf,
-                        file_name=f"{cd_prefix}.pdf",
+                        file_name=f"{cd_prefix}_{cd_ts}.pdf",
                         mime="application/pdf",
                         key="dl_code_doc_pdf",
                     )
