@@ -26,5 +26,16 @@ class BaseLLM(ABC):
         """
         pass
 
+    def generate_stream(self, prompt: str, system_prompt: str = None):
+        """Stream a response token-by-token.
+
+        Providers that support incremental output should override this
+        to yield string chunks as they arrive. The default implementation
+        falls back to the blocking `generate()` and yields the full
+        response as one chunk, so call sites can always use streaming
+        API regardless of provider.
+        """
+        yield self.generate(prompt, system_prompt)
+
     def __repr__(self):
         return f"{self.__class__.__name__}()"

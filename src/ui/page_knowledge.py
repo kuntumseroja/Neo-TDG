@@ -82,7 +82,10 @@ def render_knowledge_management():
         st.caption(
             "Upload a Markdown or PDF file directly from your machine — "
             "no path required. PDFs are text-extracted page-by-page via "
-            "`pypdf` and ingested as a single document."
+            "`pypdf` and ingested as a single document. Re-uploading the "
+            "same file **replaces** its existing chunks (idempotent by "
+            "name+size hash) — the total count only grows when you "
+            "ingest a **different** document."
         )
         uploaded = st.file_uploader(
             "Choose a .md or .pdf file",
@@ -110,6 +113,10 @@ def render_knowledge_management():
                     raw = uploaded.getvalue()
                     name = uploaded.name
                     suffix = Path(name).suffix.lower()
+                    # Snapshot the total chunk count BEFORE ingest so we
+                    # can report an accurate delta even when the store
+                    # replaces existing chunks (idempotent by doc_id).
+                    before_total = store.get_stats().get("total_chunks", 0)
                     with st.spinner(f"Extracting and ingesting {name}..."):
                         if suffix == ".pdf":
                             content = _extract_pdf_text(raw)
@@ -139,16 +146,30 @@ def render_knowledge_management():
                             chunks = pipeline.store.ingest_document(
                                 content, metadata, doc_id
                             )
+                            after_total = store.get_stats().get("total_chunks", 0)
+                            delta = after_total - before_total
+                            delta_str = (
+                                f"+{delta}" if delta > 0
+                                else f"{delta}" if delta < 0
+                                else "±0 (replaced existing)"
+                            )
                             st.success(
                                 f"Ingested **{name}** "
                                 f"({len(content):,} chars) → "
-                                f"**{chunks}** chunks created."
+                                f"**{chunks}** chunks for this document. "
+                                f"Store total: **{before_total} → {after_total}** "
+                                f"({delta_str})"
                             )
                             with st.expander("Preview extracted text", expanded=False):
                                 st.text(
                                     content[:4000]
                                     + ("\n\n... (truncated)" if len(content) > 4000 else "")
                                 )
+                            # Force a rerun so the Total Chunks / Documents
+                            # metrics at the top of the page pick up the
+                            # fresh count instead of showing the pre-ingest
+                            # snapshot from the start of this render pass.
+                            st.rerun()
                 except Exception as e:
                     logger.exception("Upload ingest failed")
                     st.error(f"Ingest failed: {e}")
@@ -177,10 +198,18 @@ def render_knowledge_management():
             if probis_domain:
                 metadata["probis_domain"] = probis_domain
 
+            before_total = store.get_stats().get("total_chunks", 0)
             with st.spinner("Ingesting documents..."):
                 if path.is_file():
                     chunks = pipeline.ingest_markdown_file(str(path), metadata)
-                    st.success(f"Ingested 1 file: {chunks} chunks created.")
+                    after_total = store.get_stats().get("total_chunks", 0)
+                    delta = after_total - before_total
+                    delta_str = f"+{delta}" if delta >= 0 else str(delta)
+                    st.success(
+                        f"Ingested 1 file: {chunks} chunks for this document. "
+                        f"Store total: **{before_total} → {after_total}** ({delta_str})"
+                    )
+                    st.rerun()
                 elif path.is_dir():
                     progress_bar = st.progress(0)
                     status_text = st.empty()
@@ -193,10 +222,15 @@ def render_knowledge_management():
                         str(path), metadata=metadata, progress_callback=progress_cb,
                     )
                     progress_bar.progress(1.0)
+                    after_total = store.get_stats().get("total_chunks", 0)
+                    delta = after_total - before_total
+                    delta_str = f"+{delta}" if delta >= 0 else str(delta)
                     st.success(
                         f"Ingested {result['files_processed']}/{result['total_files']} files: "
-                        f"{result['total_chunks']} chunks created."
+                        f"{result['total_chunks']} chunks for these documents. "
+                        f"Store total: **{before_total} → {after_total}** ({delta_str})"
                     )
+                    st.rerun()
                 else:
                     st.error(f"Path not found: {ingest_path}")
 
@@ -210,15 +244,25 @@ def render_knowledge_management():
             if not Path(tdg_docs_dir).exists():
                 st.error(f"Directory not found: {tdg_docs_dir}")
             else:
+                before_total = store.get_stats().get("total_chunks", 0)
                 with st.spinner("Ingesting TechDocGen output..."):
                     result = pipeline.ingest_markdown_directory(
                         tdg_docs_dir,
                         metadata={"source": "techdocgen"},
                     )
+                    after_total = store.get_stats().get("total_chunks", 0)
+                    delta = after_total - before_total
+                    delta_str = (
+                        f"+{delta}" if delta > 0
+                        else f"{delta}" if delta < 0
+                        else "±0 (replaced existing)"
+                    )
                     st.success(
                         f"Ingested {result['files_processed']} files: "
-                        f"{result['total_chunks']} chunks created."
+                        f"{result['total_chunks']} chunks for these documents. "
+                        f"Store total: **{before_total} → {after_total}** ({delta_str})"
                     )
+                    st.rerun()
 
     with tab3:
         st.warning("This will drop all existing data and rebuild from scratch.")
@@ -231,10 +275,13 @@ def render_knowledge_management():
             else:
                 with st.spinner("Rebuilding index..."):
                     result = pipeline.full_rebuild(rebuild_dir)
+                    after_total = store.get_stats().get("total_chunks", 0)
                     st.success(
                         f"Rebuilt index: {result['files_processed']} files, "
-                        f"{result['total_chunks']} chunks."
+                        f"{result['total_chunks']} chunks. "
+                        f"Store total now: **{after_total}**"
                     )
+                    st.rerun()
 
     st.divider()
 
