@@ -1,3 +1,15 @@
+---
+title: Lumen.AI
+emoji: 🧠
+colorFrom: blue
+colorTo: indigo
+sdk: streamlit
+sdk_version: "1.50.0"
+python_version: "3.10"
+app_file: app.py
+pinned: false
+---
+
 # Lumen.AI — SDLC Knowledge Engine
 
 AI-powered knowledge engine for software development lifecycle acceleration. Crawl .NET/Angular solutions, build a RAG knowledge store, chat with your codebase, trace flows, generate test cases from BRDs, and validate architecture rules.
