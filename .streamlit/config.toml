@@ -1,5 +1,7 @@
 [server]
-port = 8502
+# HF Spaces expects the default Streamlit port (8501). Override
+# locally via STREAMLIT_SERVER_PORT if needed.
+port = 8501
 headless = true
 # HF Spaces serves Streamlit inside a cross-origin iframe. The default
 # XSRF/CORS protection rejects file uploads with a silent red ⚠ chip
