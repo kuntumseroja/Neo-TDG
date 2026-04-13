@@ -197,6 +197,14 @@ def render_solution_crawler():
                         st.session_state.crawl_md_report = None
                         st.session_state.crawl_pdf_report = None
 
+                    # Force a clean re-render so the "No crawl results
+                    # yet" info box (left over from the previous render
+                    # pass) is replaced by the actual result tabs. Without
+                    # this, Streamlit streams the new elements alongside
+                    # the stale placeholder and you see both the success
+                    # banner AND the empty-state message at once.
+                    st.rerun()
+
                 except Exception as e:
                     st.error(f"Crawl failed: {e}")
 
@@ -206,9 +214,24 @@ def render_solution_crawler():
             disabled=not st.session_state.get("last_crawl_report"),
         ):
             if pipeline and st.session_state.last_crawl_report:
+                store = st.session_state.get("store")
+                before_total = store.get_stats().get("total_chunks", 0) if store else 0
                 with st.spinner("Ingesting crawl report..."):
                     chunks = pipeline.ingest_crawl_report(st.session_state.last_crawl_report)
-                    st.success(f"Ingested crawl report: {chunks} chunks created.")
+                    after_total = store.get_stats().get("total_chunks", 0) if store else 0
+                    delta = after_total - before_total
+                    delta_str = (
+                        f"+{delta}" if delta > 0
+                        else f"{delta}" if delta < 0
+                        else "±0 (replaced existing)"
+                    )
+                    st.success(
+                        f"Ingested crawl report: {chunks} chunks for this report. "
+                        f"Store total: **{before_total} → {after_total}** ({delta_str}). "
+                        f"Note: crawl reports use deterministic doc_ids per service, "
+                        f"so re-ingesting the same service replaces its chunks."
+                    )
+                    st.rerun()
 
     # Download buttons. File names always include the project (.sln)
     # name plus a MM-DD-YYYY timestamp so multiple runs don't overwrite

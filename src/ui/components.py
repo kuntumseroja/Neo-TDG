@@ -136,16 +136,29 @@ def render_mermaid(diagram: str, height: int = None):
     if not diagram or not diagram.strip():
         return
 
+    clean = _sanitize_mermaid(diagram)
+    if not _looks_like_valid_mermaid(clean):
+        # Cheap heuristic caught a malformed block (common with small
+        # local LLMs). Render as a plain code block with a note so the
+        # user knows why there's no rendered diagram — mermaid-js would
+        # otherwise paint its "Syntax error in text" sticker, which we
+        # can't trap from Python.
+        st.caption(
+            "_Mermaid block looks malformed — showing source instead. "
+            "Try a larger / more capable model for better diagrams._"
+        )
+        st.code(clean or diagram, language="mermaid")
+        return
+
     try:
         from streamlit_mermaid import st_mermaid
-        clean = _sanitize_mermaid(diagram)
         if height is None:
             line_count = clean.count("\n") + 1
             # ~22px per line, clamped between 320 and 1400
             height = max(320, min(1400, 80 + line_count * 22))
         st_mermaid(clean, height=height)
     except Exception:
-        st.code(diagram, language="mermaid")
+        st.code(clean or diagram, language="mermaid")
 
 
 def render_markdown_with_mermaid(markdown_text: str):
@@ -213,9 +226,40 @@ def render_confidence_badge(confidence: str):
 
 
 def _sanitize_mermaid(code: str) -> str:
-    """Clean up Mermaid code for rendering."""
-    # Remove duplicate participant lines
+    """Clean up Mermaid code for rendering.
+
+    Small local LLMs (llama3.1:8b, deepseek-coder-v2:16b) often emit
+    Mermaid that mermaid-js rejects with "Syntax error in text" because
+    of tiny formatting issues: duplicate participant declarations,
+    stray leading prose, trailing code-fence markers left from truncated
+    streaming, leading whitespace before the diagram type, etc. We try
+    to repair the common cases before handing off to st_mermaid.
+    """
+    if not code:
+        return code
+
+    # Strip any leftover fence markers and BOM / zero-width spaces.
+    code = code.replace("\ufeff", "").replace("\u200b", "")
+    code = re.sub(r"^```(?:mermaid)?\s*", "", code.strip())
+    code = re.sub(r"```\s*$", "", code).strip()
+
     lines = code.split("\n")
+
+    # Drop any leading prose lines before the first diagram-type token.
+    diagram_types = (
+        "sequenceDiagram", "flowchart", "graph", "classDiagram",
+        "stateDiagram", "erDiagram", "gantt", "pie", "journey",
+        "mindmap", "timeline", "gitGraph", "quadrantChart",
+    )
+    start_idx = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if any(stripped.startswith(dt) for dt in diagram_types):
+            start_idx = i
+            break
+    lines = lines[start_idx:]
+
+    # Remove duplicate participant lines (sequenceDiagram).
     seen = set()
     clean_lines = []
     for line in lines:
@@ -225,8 +269,36 @@ def _sanitize_mermaid(code: str) -> str:
             if name in seen:
                 continue
             seen.add(name)
+        # Drop stray "```" or "~~~" fence remnants inside the block.
+        if stripped in ("```", "~~~"):
+            continue
         clean_lines.append(line)
-    return "\n".join(clean_lines)
+    return "\n".join(clean_lines).strip()
+
+
+def _looks_like_valid_mermaid(code: str) -> bool:
+    """Cheap heuristic to catch obviously-malformed Mermaid before
+    mermaid-js renders its "Syntax error in text" sticker. Not a full
+    validator — just rules out the cases we see most often from small
+    local models."""
+    if not code or not code.strip():
+        return False
+    stripped = code.strip()
+    diagram_types = (
+        "sequenceDiagram", "flowchart", "graph", "classDiagram",
+        "stateDiagram", "erDiagram", "gantt", "pie", "journey",
+        "mindmap", "timeline", "gitGraph", "quadrantChart",
+    )
+    first_line = stripped.split("\n", 1)[0].strip()
+    if not any(first_line.startswith(dt) for dt in diagram_types):
+        return False
+    # sequenceDiagram without any arrow or message is almost always
+    # a truncated/half-generated block.
+    if first_line.startswith("sequenceDiagram"):
+        body = stripped[len("sequenceDiagram"):]
+        if "->>" not in body and "-->>" not in body and "->" not in body:
+            return False
+    return True
 
 
 def init_session_state():

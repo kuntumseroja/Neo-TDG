@@ -51,6 +51,40 @@ class EdgeCase(BaseModel):
     component: str = ""
 
 
+# ── QA / BRD-to-TestCase models ────────────────────────────────────────
+
+
+class BRDRequirement(BaseModel):
+    """A single requirement extracted from a BRD document."""
+    req_id: str = ""
+    title: str = ""
+    description: str = ""
+    priority: str = "medium"  # low|medium|high|critical
+    category: str = ""  # functional|non-functional|security|performance|ux
+
+
+class GeneratedTestCase(BaseModel):
+    """A test case generated from a BRD requirement."""
+    tc_id: str = ""
+    requirement_id: str = ""
+    title: str = ""
+    preconditions: str = ""
+    steps: List[str] = Field(default_factory=list)
+    expected_result: str = ""
+    priority: str = "medium"
+    type: str = "functional"  # functional|negative|boundary|security|performance
+    status: str = "draft"  # draft|review|approved
+
+
+class BRDTestReport(BaseModel):
+    """Full report: BRD → Requirements → Test Cases."""
+    source_file: str = ""
+    requirements: List[BRDRequirement] = Field(default_factory=list)
+    test_cases: List[GeneratedTestCase] = Field(default_factory=list)
+    traceability: dict = Field(default_factory=dict)  # req_id → [tc_ids]
+    coverage_pct: float = 0.0
+
+
 class Violation(BaseModel):
     """Architecture rule violation."""
     rule: str
