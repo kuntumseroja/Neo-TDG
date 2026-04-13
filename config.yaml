@@ -11,7 +11,7 @@ llm_providers:
     model: deepseek-coder-v2:16b
     base_url: http://localhost:11434
     temperature: 0.3
-    max_tokens: 4000
+    max_tokens: 8192
   groq:
     enabled: true
     model: llama-3.3-70b-versatile

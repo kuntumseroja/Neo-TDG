@@ -28,14 +28,14 @@ class OllamaLLM(BaseLLM):
         base_url: str = "http://localhost:11434",
         model: str = "llama3.2",
         temperature: float = 0.3,
-        max_tokens: int = 4000,
+        max_tokens: int = 8192,
         connect_timeout: float = 10.0,
         read_timeout: float = 600.0,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.temperature = temperature
-        self.max_tokens = max_tokens
+        self.max_tokens = int(os.environ.get("OLLAMA_MAX_TOKENS", max_tokens))
         # Allow env overrides without touching callers.
         self.connect_timeout = float(
             os.environ.get("OLLAMA_CONNECT_TIMEOUT", connect_timeout)
@@ -64,6 +64,7 @@ class OllamaLLM(BaseLLM):
             "options": {
                 "temperature": self.temperature,
                 "num_predict": self.max_tokens,
+                "num_ctx": int(os.environ.get("OLLAMA_NUM_CTX", 16384)),
             },
         }
         if system_prompt:
