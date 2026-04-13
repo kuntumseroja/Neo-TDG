@@ -52,15 +52,35 @@ def load_config() -> dict:
     return {}
 
 
+import os
+
+
 def get_ollama_models(base_url: str) -> list:
     """Fetch available Ollama models."""
     try:
-        resp = requests.get(f"{base_url}/api/tags", timeout=5)
+        resp = requests.get(f"{base_url}/api/tags", timeout=3)
         resp.raise_for_status()
         models = resp.json().get("models", [])
         return [m["name"] for m in models]
     except Exception:
         return []
+
+
+def detect_active_provider(config: dict) -> str:
+    """Detect which LLM provider is active based on env vars / config."""
+    explicit = os.environ.get("DEFAULT_LLM_PROVIDER", "")
+    if explicit:
+        return explicit
+    default = config.get("default_llm_provider", "auto")
+    if default != "auto":
+        return default
+    if os.environ.get("GROQ_API_KEY"):
+        return "groq"
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    if os.environ.get("TOGETHER_API_KEY"):
+        return "together"
+    return "ollama"
 
 
 def initialize_services(config: dict):
@@ -138,36 +158,95 @@ config = load_config()
 with st.sidebar:
     st.title("Settings")
 
-    # Ollama settings
-    with st.expander("Ollama Configuration", expanded=False):
-        ollama_url = st.text_input(
-            "Ollama URL",
-            value=config.get("llm_providers", {}).get("ollama", {}).get("base_url", "http://localhost:11434"),
-            key="ollama_url",
+    # LLM Provider settings
+    active_provider = detect_active_provider(config)
+    with st.expander("LLM Configuration", expanded=False):
+        providers = ["auto", "groq", "openai", "together", "ollama"]
+        provider_labels = {
+            "auto": "🔄 Auto-detect",
+            "groq": "⚡ Groq (free tier)",
+            "openai": "🤖 OpenAI",
+            "together": "🤝 Together AI",
+            "ollama": "🏠 Ollama (local)",
+        }
+        current_default = config.get("default_llm_provider", "auto")
+        default_idx = providers.index(current_default) if current_default in providers else 0
+        selected_provider = st.selectbox(
+            "LLM Provider",
+            providers,
+            index=default_idx,
+            format_func=lambda x: provider_labels.get(x, x),
+            key="llm_provider_select",
         )
-        # Update config
-        config.setdefault("llm_providers", {}).setdefault("ollama", {})["base_url"] = ollama_url
+        config["default_llm_provider"] = selected_provider
 
-        models = get_ollama_models(ollama_url)
-        if models:
-            default_model = config.get("llm_providers", {}).get("ollama", {}).get("model", "llama3.2")
-            default_idx = models.index(default_model) if default_model in models else 0
-            selected_model = st.selectbox("LLM Model", models, index=default_idx, key="ollama_model")
-            config["llm_providers"]["ollama"]["model"] = selected_model
-        else:
-            st.text_input(
-                "LLM Model",
-                value=config.get("llm_providers", {}).get("ollama", {}).get("model", "llama3.2"),
-                key="ollama_model_text",
+        # Show active provider info
+        if selected_provider == "auto":
+            st.caption(f"Active: **{active_provider}** (auto-detected)")
+
+        # Provider-specific settings
+        if selected_provider == "ollama" or (selected_provider == "auto" and active_provider == "ollama"):
+            ollama_url = st.text_input(
+                "Ollama URL",
+                value=config.get("llm_providers", {}).get("ollama", {}).get("base_url", "http://localhost:11434"),
+                key="ollama_url",
             )
+            config.setdefault("llm_providers", {}).setdefault("ollama", {})["base_url"] = ollama_url
+            models = get_ollama_models(ollama_url)
+            if models:
+                default_model = config.get("llm_providers", {}).get("ollama", {}).get("model", "llama3.2")
+                default_idx = models.index(default_model) if default_model in models else 0
+                selected_model = st.selectbox("LLM Model", models, index=default_idx, key="ollama_model")
+                config["llm_providers"]["ollama"]["model"] = selected_model
+            else:
+                st.text_input(
+                    "LLM Model",
+                    value=config.get("llm_providers", {}).get("ollama", {}).get("model", "llama3.2"),
+                    key="ollama_model_text",
+                )
+        elif selected_provider in ("groq", "openai", "together") or (
+            selected_provider == "auto" and active_provider in ("groq", "openai", "together")
+        ):
+            p = active_provider if selected_provider == "auto" else selected_provider
+            env_keys = {"groq": "GROQ_API_KEY", "openai": "OPENAI_API_KEY", "together": "TOGETHER_API_KEY"}
+            env_key = env_keys.get(p, "")
+            has_key = bool(os.environ.get(env_key))
+            if has_key:
+                st.success(f"✅ `{env_key}` detected from environment")
+            else:
+                api_key_input = st.text_input(
+                    f"{p.title()} API Key",
+                    type="password",
+                    key=f"{p}_api_key_input",
+                    help=f"Set via HF Secrets or env var: {env_key}",
+                )
+                if api_key_input:
+                    os.environ[env_key] = api_key_input
+                    config.setdefault("llm_providers", {}).setdefault(p, {})["api_key"] = api_key_input
 
-        # Embedding model
-        embed_model = st.text_input(
-            "Embedding Model",
-            value=config.get("knowledge_store", {}).get("embedding", {}).get("model", "nomic-embed-text"),
-            key="embed_model",
-        )
-        config.setdefault("knowledge_store", {}).setdefault("embedding", {})["model"] = embed_model
+            default_models = {
+                "groq": "llama-3.3-70b-versatile",
+                "openai": "gpt-4o-mini",
+                "together": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            }
+            model_input = st.text_input(
+                "Model",
+                value=config.get("llm_providers", {}).get(p, {}).get("model", default_models.get(p, "")),
+                key=f"{p}_model_input",
+            )
+            config.setdefault("llm_providers", {}).setdefault(p, {})["model"] = model_input
+
+        # Embedding provider info
+        st.divider()
+        embed_provider = config.get("knowledge_store", {}).get("embedding", {}).get("provider", "auto")
+        if embed_provider == "auto":
+            if active_provider == "ollama":
+                st.caption("Embeddings: Ollama (`nomic-embed-text`)")
+            else:
+                st.caption("Embeddings: sentence-transformers (`all-MiniLM-L6-v2`)")
+        else:
+            embed_model = config.get("knowledge_store", {}).get("embedding", {}).get("model", "")
+            st.caption(f"Embeddings: {embed_provider} (`{embed_model}`)")
 
     # Knowledge store info
     with st.expander("Knowledge Store", expanded=False):

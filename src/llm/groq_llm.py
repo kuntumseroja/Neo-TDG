@@ -61,5 +61,28 @@ class GroqLLM(BaseLLM):
             logger.error(f"Groq generate failed: {e}")
             raise
 
+    def generate_stream(self, prompt: str, system_prompt: str = None):
+        """Stream tokens from Groq API."""
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=True,
+            )
+            for chunk in response:
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    yield delta.content
+        except Exception as e:
+            logger.error(f"Groq stream failed: {e}")
+            raise
+
     def __repr__(self):
         return f"GroqLLM(model={self.model})"

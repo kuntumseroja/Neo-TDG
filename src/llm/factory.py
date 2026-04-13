@@ -15,16 +15,40 @@ class LLMFactory:
     """Factory for creating LLM provider instances from configuration."""
 
     @staticmethod
+    def _auto_detect_provider() -> str:
+        """Auto-detect best available LLM provider from environment.
+
+        Priority: groq > openai > together > ollama
+        """
+        if os.environ.get("DEFAULT_LLM_PROVIDER"):
+            return os.environ["DEFAULT_LLM_PROVIDER"]
+        if os.environ.get("GROQ_API_KEY"):
+            logger.info("Auto-detected Groq API key")
+            return "groq"
+        if os.environ.get("OPENAI_API_KEY"):
+            logger.info("Auto-detected OpenAI API key")
+            return "openai"
+        if os.environ.get("TOGETHER_API_KEY"):
+            logger.info("Auto-detected Together API key")
+            return "together"
+        logger.info("No cloud API keys found, defaulting to Ollama")
+        return "ollama"
+
+    @staticmethod
     def create(provider_name: str, config: dict) -> BaseLLM:
         """Create an LLM instance based on provider name and config.
 
         Args:
-            provider_name: One of 'ollama', 'groq', 'openai', 'together'
+            provider_name: One of 'auto', 'ollama', 'groq', 'openai', 'together'
             config: Full application config dict
 
         Returns:
             BaseLLM instance
         """
+        if provider_name == "auto":
+            provider_name = LLMFactory._auto_detect_provider()
+            logger.info(f"Auto-selected LLM provider: {provider_name}")
+
         provider_config = config.get("llm_providers", {}).get(provider_name, {})
 
         if provider_name == "ollama":

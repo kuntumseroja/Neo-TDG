@@ -122,16 +122,43 @@ class SentenceTransformerEmbeddingProvider(BaseEmbeddingProvider):
         return self._dimension
 
 
+def _is_ollama_available(config: dict) -> bool:
+    """Check if Ollama is reachable."""
+    base_url = config.get("llm_providers", {}).get("ollama", {}).get(
+        "base_url", "http://localhost:11434"
+    )
+    try:
+        resp = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=3)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
 def create_embedding_provider(config: dict) -> BaseEmbeddingProvider:
-    """Factory function to create the configured embedding provider."""
+    """Factory function to create the configured embedding provider.
+
+    When provider is 'auto':
+      - If Ollama is reachable → use OllamaEmbeddingProvider
+      - Otherwise → use SentenceTransformerEmbeddingProvider (works everywhere)
+    """
     embedding_config = config.get("knowledge_store", {}).get("embedding", {})
-    provider = embedding_config.get("provider", "ollama")
+    provider = embedding_config.get("provider", "auto")
+
+    # Auto-detect: prefer Ollama if reachable, else sentence-transformers
+    if provider == "auto":
+        if _is_ollama_available(config):
+            provider = "ollama"
+            logger.info("Auto-detected Ollama for embeddings")
+        else:
+            provider = "sentence-transformers"
+            logger.info("Ollama not available, using sentence-transformers for embeddings")
 
     if provider == "ollama":
         base_url = config.get("llm_providers", {}).get("ollama", {}).get(
             "base_url", "http://localhost:11434"
         )
-        model = embedding_config.get("model", "nomic-embed-text")
+        model = embedding_config.get("ollama_model",
+                    embedding_config.get("model", "nomic-embed-text"))
         return OllamaEmbeddingProvider(base_url=base_url, model=model)
     elif provider == "sentence-transformers":
         model = embedding_config.get("model", "all-MiniLM-L6-v2")

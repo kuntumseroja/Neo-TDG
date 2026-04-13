@@ -66,6 +66,28 @@ class OpenAILLM(BaseLLM):
             logger.error(f"OpenAI generate failed: {e}")
             raise
 
+    def generate_stream(self, prompt: str, system_prompt: str = None):
+        """Stream tokens from OpenAI-compatible API."""
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=True,
+            )
+            for chunk in response:
+                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except Exception as e:
+            logger.error(f"OpenAI stream failed: {e}")
+            raise
+
     def __repr__(self):
         prefix = f"base_url={self.base_url}, " if self.base_url else ""
         return f"OpenAILLM({prefix}model={self.model})"

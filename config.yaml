@@ -2,6 +2,9 @@
 # TechDocGen RAG Expansion - AI-Powered SDLC Knowledge Engine
 
 # === LLM Providers ===
+# Cloud deployment (HF Spaces): set API keys via env vars / HF Secrets:
+#   GROQ_API_KEY, OPENAI_API_KEY, or TOGETHER_API_KEY
+# Local deployment: use ollama (no API key needed)
 llm_providers:
   ollama:
     enabled: true
@@ -9,16 +12,35 @@ llm_providers:
     base_url: http://localhost:11434
     temperature: 0.3
     max_tokens: 4000
+  groq:
+    enabled: true
+    model: llama-3.3-70b-versatile
+    temperature: 0.3
+    max_tokens: 4000
+  openai:
+    enabled: true
+    model: gpt-4o-mini
+    temperature: 0.3
+    max_tokens: 4000
+  together:
+    enabled: true
+    model: meta-llama/Llama-3.3-70B-Instruct-Turbo
+    base_url: https://api.together.xyz/v1
+    temperature: 0.3
+    max_tokens: 4000
 
-default_llm_provider: ollama
+# Auto-detect: groq > openai > together > ollama
+# Override with env var: DEFAULT_LLM_PROVIDER=groq
+default_llm_provider: auto
 
 # === RAG Knowledge Store ===
 knowledge_store:
   enabled: true
   persist_dir: "./knowledge_base"
   embedding:
-    provider: "ollama"              # ollama | sentence-transformers
-    model: "nomic-embed-text"       # or "all-MiniLM-L6-v2"
+    provider: "auto"                # auto | ollama | sentence-transformers
+    model: "all-MiniLM-L6-v2"      # sentence-transformers model (cloud default)
+    ollama_model: "nomic-embed-text"  # ollama model (local default)
     batch_size: 32
   chunking:
     strategy: "markdown_headers"    # markdown_headers | fixed_size
