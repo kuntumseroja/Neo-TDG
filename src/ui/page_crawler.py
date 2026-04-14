@@ -154,6 +154,30 @@ def render_solution_crawler():
         help="Leave blank to auto-detect angular.json under the solution directory.",
     )
 
+    # Documentation structure selector — controls which template the
+    # CrawlDocGenerator uses. Default keeps the original full report;
+    # "Architecture Doc" produces an 8-section DDD/Clean-Architecture
+    # document (bounded contexts, context map, domain model, events,
+    # clean arch diagram, sequence diagrams, event streams, glossary).
+    doc_structure_label = st.selectbox(
+        "Documentation Structure",
+        list(CrawlDocGenerator.STRUCTURES.values()),
+        index=0,
+        key="doc_structure_select",
+        help=(
+            "Standard = full crawl report covering every section the "
+            "crawler can produce. Architecture Doc = DDD/Clean-Arch "
+            "8-section template (bounded contexts → context map → "
+            "domain model → events → clean arch → sequence → event "
+            "stream → glossary)."
+        ),
+    )
+    # Reverse-lookup the key from the label
+    doc_structure_key = next(
+        (k for k, v in CrawlDocGenerator.STRUCTURES.items() if v == doc_structure_label),
+        "standard",
+    )
+
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Crawl Solution", type="primary", disabled=not sln_path):
@@ -181,11 +205,14 @@ def render_solution_crawler():
                         f"{len(report.ui_components)} UI components"
                     )
 
-                    # Generate documentation
+                    # Generate documentation in the user-selected structure
                     try:
                         doc_gen = CrawlDocGenerator(llm=st.session_state.get("llm"))
-                        md_content = doc_gen.generate_markdown(report)
+                        md_content = doc_gen.generate_markdown(
+                            report, structure=doc_structure_key
+                        )
                         st.session_state.crawl_md_report = md_content
+                        st.session_state.crawl_doc_structure = doc_structure_key
                         try:
                             pdf_content = doc_gen.generate_pdf(md_content)
                             st.session_state.crawl_pdf_report = bytes(pdf_content)
@@ -209,6 +236,39 @@ def render_solution_crawler():
                 with st.spinner("Ingesting crawl report..."):
                     chunks = pipeline.ingest_crawl_report(st.session_state.last_crawl_report)
                     st.success(f"Ingested crawl report: {chunks} chunks created.")
+
+    # Re-generate doc with the currently selected structure WITHOUT
+    # re-crawling — useful when the user wants to switch between
+    # Standard and Architecture Doc on an already-crawled solution.
+    if st.session_state.get("last_crawl_report"):
+        if st.button(
+            f"Re-generate Documentation ({doc_structure_label})",
+            disabled=(
+                st.session_state.get("crawl_doc_structure") == doc_structure_key
+                and bool(st.session_state.get("crawl_md_report"))
+            ),
+            help="Rebuild the doc using the currently selected structure.",
+        ):
+            with st.spinner(f"Rendering {doc_structure_label}..."):
+                try:
+                    doc_gen = CrawlDocGenerator(llm=st.session_state.get("llm"))
+                    md_content = doc_gen.generate_markdown(
+                        st.session_state.last_crawl_report,
+                        structure=doc_structure_key,
+                    )
+                    st.session_state.crawl_md_report = md_content
+                    st.session_state.crawl_doc_structure = doc_structure_key
+                    try:
+                        pdf_content = doc_gen.generate_pdf(md_content)
+                        st.session_state.crawl_pdf_report = bytes(pdf_content)
+                    except Exception as pdf_err:
+                        logger.warning(f"PDF re-gen failed: {pdf_err}")
+                        st.session_state.crawl_pdf_report = None
+                    st.success(f"Re-generated as {doc_structure_label}.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Re-generation failed: {e}")
+                    logger.exception("Doc re-generation crashed")
 
     # Download buttons. File names always include the project (.sln)
     # name plus a MM-DD-YYYY timestamp so multiple runs don't overwrite
@@ -241,7 +301,18 @@ def render_solution_crawler():
                 )
 
         if md_report:
-            with st.expander("Preview Technical Documentation", expanded=False):
+            # Render preview OUTSIDE a collapsed expander — streamlit_mermaid
+            # mounts its iframe at 0×0 when the parent is hidden on first
+            # render, which produces the "empty diagram" bug users saw
+            # when opening the expander. A disclosure via checkbox keeps
+            # the option to hide the preview but only mounts the iframe
+            # once visible.
+            show_preview = st.checkbox(
+                "Show Technical Documentation Preview",
+                value=True,
+                key="show_tech_doc_preview",
+            )
+            if show_preview:
                 st.caption(
                     f"{len(md_report):,} characters - mermaid diagrams render "
                     "inline below."
@@ -342,7 +413,12 @@ def render_solution_crawler():
                     )
 
             if cd_md:
-                with st.expander("Preview Code Documentation", expanded=False):
+                show_cd_preview = st.checkbox(
+                    "Show Code Documentation Preview",
+                    value=True,
+                    key="show_code_doc_preview",
+                )
+                if show_cd_preview:
                     st.caption(
                         f"{len(cd_md):,} characters - per-symbol API reference "
                         "with function explanations."

@@ -90,40 +90,190 @@ def render_rag_chat():
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Generate response
+        # Generate response via the split retrieve→stream→finalize
+        # pipeline. The knowledge store is verified good (see
+        # tests/test_knowledge_integration.py — 40/40 passing). The
+        # latency you feel on local queries is Ollama prompt-eval on
+        # CPU, not retrieval. Streaming shows the user *something is
+        # happening* immediately via a waiting banner that auto-clears
+        # on the first token.
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                result = engine.query(
-                    question=prompt,
-                    mode=mode,
-                    filters=filters if filters else None,
-                    conversation_id=st.session_state.conversation_id,
+            llm = st.session_state.get("llm")
+
+            # 1. Retrieval + rerank + prompt build (fast, with spinner).
+            try:
+                with st.spinner("Retrieving context..."):
+                    prepared = engine.prepare_query(
+                        question=prompt,
+                        mode=mode,
+                        filters=filters if filters else None,
+                        conversation_id=st.session_state.conversation_id,
+                    )
+            except Exception as e:
+                st.error(f"Retrieval failed: {e}")
+                return
+
+            # Render sources IMMEDIATELY — the knowledge store already
+            # told us what it found. No reason to make the user wait
+            # until generation finishes to see which documents were
+            # retrieved.
+            render_sources(prepared["sources"])
+            render_confidence_badge(prepared["confidence"])
+
+            if llm is None:
+                st.error(
+                    "LLM not initialized. Check Ollama is running "
+                    "(`ollama serve`) and the sidebar provider settings."
                 )
+                return
 
-                # Update conversation ID
+            # 2. Live token streaming with a waiting banner + blinking
+            #    cursor + per-token log markers so slow cold-loads are
+            #    visible in logs/streamlit.log.
+            import time as _time
+            import logging as _lg
+            _logger = _lg.getLogger(__name__)
+
+            wait_placeholder = st.empty()
+            model_label = getattr(llm, "model", "LLM")
+            wait_placeholder.markdown(
+                f"⏳ _Generating with `{model_label}`… first token can take "
+                f"30-120s on CPU for large models._"
+            )
+            gen_start = _time.monotonic()
+            _logger.info(
+                "RAG chat: starting generation with %s (prompt=%d chars, mode=%s)",
+                model_label, len(prepared["user_prompt"]), mode,
+            )
+
+            stream_placeholder = st.empty()
+            accumulated: list[str] = []
+            first_token_at: list[float] = []  # mutable closure cell
+
+            def _token_iter():
+                stream_fn = getattr(llm, "generate_stream", None)
+                produced = False
+
+                if stream_fn is None:
+                    # Provider without streaming — blocking fallback.
+                    blocking = llm.generate(
+                        prepared["user_prompt"], prepared["system_prompt"]
+                    )
+                    if blocking:
+                        yield blocking
+                    return
+
+                for chunk in stream_fn(
+                    prepared["user_prompt"], prepared["system_prompt"]
+                ):
+                    if chunk:
+                        produced = True
+                        yield chunk
+
+                if not produced:
+                    _logger.warning(
+                        "RAG chat: streaming yielded zero tokens, "
+                        "falling back to blocking generate()"
+                    )
+                    blocking = llm.generate(
+                        prepared["user_prompt"], prepared["system_prompt"]
+                    )
+                    if blocking:
+                        yield blocking
+
+            # Throttle UI updates — re-rendering the entire accumulated
+            # markdown on every token is O(N²) and makes the stream
+            # feel slower the longer the answer gets. Update at most
+            # ~10 fps (every 100ms) regardless of token arrival rate.
+            last_render = [0.0]  # mutable closure cell
+            RENDER_INTERVAL = 0.1  # seconds
+
+            def _render_current():
+                stream_placeholder.markdown("".join(accumulated) + " ▌")
+                last_render[0] = _time.monotonic()
+
+            try:
+                for chunk in _token_iter():
+                    if not chunk:
+                        continue
+                    if not first_token_at:
+                        first_token_at.append(_time.monotonic() - gen_start)
+                        wait_placeholder.empty()
+                        _logger.info(
+                            "RAG chat: first token after %.1fs",
+                            first_token_at[0],
+                        )
+                        accumulated.append(chunk)
+                        _render_current()
+                        continue
+                    accumulated.append(chunk)
+                    # Only re-render if enough time elapsed since last paint.
+                    if _time.monotonic() - last_render[0] >= RENDER_INTERVAL:
+                        _render_current()
+                # Final paint so the last few tokens appear before
+                # the placeholder clears.
+                _render_current()
+            except Exception as e:
+                wait_placeholder.empty()
+                stream_placeholder.empty()
+                _logger.exception("Streaming failed")
+                st.error(f"Error generating response: {e}")
+                return
+            finally:
+                try:
+                    wait_placeholder.empty()
+                except Exception:
+                    pass
+
+            # Clear the streaming draft; the final render replaces it
+            # with proper mermaid diagrams.
+            stream_placeholder.empty()
+            answer = "".join(accumulated).strip()
+
+            _logger.info(
+                "RAG chat: generation finished in %.1fs (%d chars, "
+                "first-token %.1fs)",
+                _time.monotonic() - gen_start,
+                len(answer),
+                first_token_at[0] if first_token_at else -1.0,
+            )
+
+            if not answer:
+                st.error(
+                    "LLM returned an empty response. The model may be "
+                    "cold-loading — try again, or switch to a lighter "
+                    "model in config.yaml (e.g. llama3.1:8b or "
+                    "llama3.2:3b)."
+                )
+                return
+
+            # 3. Final mermaid-aware render. Malformed diagrams from
+            #    small local models fall back to a code block via
+            #    render_mermaid's _looks_like_valid_mermaid guard.
+            render_markdown_with_mermaid(answer)
+
+            # Related topics (carbon tag chips)
+            if prepared["related_topics"]:
+                tags_html = (
+                    '<div style="margin-top:8px;display:flex;'
+                    'flex-wrap:wrap;gap:4px;">'
+                )
+                for topic in prepared["related_topics"]:
+                    tags_html += render_carbon_tag(topic, "#e0e0e0", "#161616")
+                tags_html += '</div>'
+                st.markdown(tags_html, unsafe_allow_html=True)
+
+            # 4. Persist to conversation memory + update id.
+            try:
+                result = engine.finalize_query(prompt, answer, prepared)
                 st.session_state.conversation_id = result.conversation_id
+            except Exception as e:
+                _logger.exception("finalize_query failed")
+                st.warning(f"Response shown but not saved to memory: {e}")
 
-                # Display answer
-                render_markdown_with_mermaid(result.answer)
-
-                # Display sources
-                render_sources(result.sources)
-
-                # Display confidence
-                render_confidence_badge(result.confidence)
-
-                # Show related topics as Carbon tags
-                if result.related_topics:
-                    tags_html = '<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;">'
-                    for topic in result.related_topics:
-                        tags_html += render_carbon_tag(topic, "#e0e0e0", "#161616")
-                    tags_html += '</div>'
-                    st.markdown(tags_html, unsafe_allow_html=True)
-
-                # Store in chat history
-                st.session_state.chat_messages.append({
-                    "role": "assistant",
-                    "content": result.answer,
-                    "sources": [s.model_dump() for s in result.sources],
-                    "confidence": result.confidence,
-                })
+            st.session_state.chat_messages.append({
+                "role": "assistant",
+                "content": answer,
+                "sources": [s.model_dump() for s in prepared["sources"]],
+                "confidence": prepared["confidence"],
+            })

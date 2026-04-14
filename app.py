@@ -208,21 +208,35 @@ with st.sidebar:
 if not st.session_state.services_initialized:
     initialize_services(config)
 
-# Navigation
-PAGES = {
-    "Solution Crawler": "crawler",
-    "Knowledge Store": "knowledge",
-    "RAG Chat": "rag_chat",
-    "Flow Explorer": "flows",
-    "SDLC Tools": "sdlc",
-}
+# Navigation — sidebar menu links (not radio buttons)
+NAV_ITEMS = [
+    ("🔍", "Solution Crawler", "crawler"),
+    ("📚", "Knowledge Store", "knowledge"),
+    ("💬", "RAG Chat", "rag_chat"),
+    ("🔀", "Flow Explorer", "flows"),
+    ("🛠", "SDLC Tools", "sdlc"),
+    ("✅", "QA Test Generator", "qa_testcase"),
+]
+
+if "nav_page" not in st.session_state:
+    st.session_state.nav_page = "crawler"
 
 with st.sidebar:
     st.divider()
-    selected_page = st.radio("Navigation", list(PAGES.keys()), key="nav_page")
+    st.caption("Navigation")
+    for icon, label, key in NAV_ITEMS:
+        is_active = st.session_state.nav_page == key
+        if st.button(
+            f"{icon}  {label}",
+            key=f"nav_{key}",
+            use_container_width=True,
+            type="primary" if is_active else "secondary",
+        ):
+            st.session_state.nav_page = key
+            st.rerun()
 
 # Render selected page
-page_key = PAGES[selected_page]
+page_key = st.session_state.nav_page
 
 if page_key == "rag_chat":
     from src.ui.page_rag_chat import render_rag_chat
@@ -239,3 +253,6 @@ elif page_key == "flows":
 elif page_key == "sdlc":
     from src.ui.page_sdlc import render_sdlc_tools
     render_sdlc_tools()
+elif page_key == "qa_testcase":
+    from src.ui.page_qa_testcase import render_qa_testcase
+    render_qa_testcase()

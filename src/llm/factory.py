@@ -37,7 +37,7 @@ class LLMFactory:
                 base_url=base_url,
                 model=provider_config.get("model", "llama3.2"),
                 temperature=provider_config.get("temperature", 0.3),
-                max_tokens=provider_config.get("max_tokens", 4000),
+                max_tokens=provider_config.get("max_tokens", 8192),
             )
 
         else:

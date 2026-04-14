@@ -39,8 +39,29 @@ class CrawlDocGenerator:
         """
         self.llm = llm
 
-    def generate_markdown(self, report: CrawlReport) -> str:
-        """Generate comprehensive markdown documentation from crawl results."""
+    # Available structure templates. UI selector exposes these by key.
+    STRUCTURES = {
+        "standard": "Standard (full crawl report)",
+        "architecture": "Architecture Doc (DDD / Clean Architecture)",
+    }
+
+    def generate_markdown(
+        self, report: CrawlReport, structure: str = "standard"
+    ) -> str:
+        """Generate markdown documentation in the requested structure.
+
+        Args:
+            report: The crawl report.
+            structure: One of `STRUCTURES.keys()`. Defaults to `standard`,
+                which produces the original full report. `architecture`
+                produces an 8-section DDD/Clean-Architecture document.
+        """
+        if structure == "architecture":
+            return self._generate_architecture_doc(report)
+        return self._generate_standard(report)
+
+    def _generate_standard(self, report: CrawlReport) -> str:
+        """Original full report — every section the crawler can produce."""
         sections = [
             self._section_title(report),
             self._section_overview(report),
@@ -61,6 +82,32 @@ class CrawlDocGenerator:
             self._section_er_diagram(report),
             self._section_ui_components(report),
             self._section_dependency_graph(report),
+        ]
+        return "\n\n".join(s for s in sections if s)
+
+    def _generate_architecture_doc(self, report: CrawlReport) -> str:
+        """Architecture Doc structure — DDD + Clean Architecture template.
+
+        Layout:
+          1. Bounded Context Definition
+          2. Context Map
+          3. Domain Model (entities, value objects, aggregates, repos, factories, class diagram)
+          4. Domain Event Catalogue
+          5. Clean Architecture Diagram
+          6. Sequence Diagram (controller → read model)
+          7. Event Stream (synchronous & asynchronous)
+          8. Glossary (Ubiquitous Language — CoreTax)
+        """
+        sections = [
+            self._arch_title(report),
+            self._arch_1_bounded_contexts(report),
+            self._arch_2_context_map(report),
+            self._arch_3_domain_model(report),
+            self._arch_4_domain_event_catalogue(report),
+            self._arch_5_clean_architecture(report),
+            self._arch_6_sequence_diagrams(report),
+            self._arch_7_event_stream(report),
+            self._arch_8_glossary(report),
         ]
         return "\n\n".join(s for s in sections if s)
 
@@ -1440,4 +1487,1092 @@ class CrawlDocGenerator:
                 kind = f"contract ({transport})" if transport else "contract"
                 lines.append(f"| {src} | {tgt} | {kind} |")
 
+        return "\n".join(lines)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Architecture Doc (DDD / Clean Architecture) — 8 sections
+    # ──────────────────────────────────────────────────────────────────
+
+    # Per-layer narrative used when explaining each project. Keeps the
+    # doc readable for stakeholders who don't already know Clean Arch.
+    _LAYER_DESCRIPTION = {
+        "Domain": (
+            "Pure business model. Holds entities, value objects, aggregates "
+            "and domain events. Has **no dependencies** on other layers."
+        ),
+        "Application": (
+            "Use-case orchestration. Coordinates the domain layer, defines "
+            "command/query handlers, and exposes interfaces (ports) that "
+            "infrastructure adapters implement."
+        ),
+        "Infrastructure": (
+            "External adapters: persistence (EF Core / DbContext), "
+            "messaging (RabbitMQ / MassTransit), HTTP clients, file "
+            "storage, third-party SDKs. Implements interfaces declared "
+            "in Application/Domain."
+        ),
+        "Presentation": (
+            "Inbound delivery layer — typically ASP.NET Core Web API "
+            "controllers, gRPC services or background hosts. Translates "
+            "HTTP/transport concerns into Application calls."
+        ),
+        "Worker": (
+            "Long-running host process. Subscribes to message queues, "
+            "runs scheduled jobs, and dispatches work to the Application "
+            "layer."
+        ),
+        "Contracts": (
+            "Public message contracts shared across services — DTOs, "
+            "events, and integration interfaces. Decouples producers "
+            "from consumers."
+        ),
+        "Shared": (
+            "Cross-cutting utilities reused by multiple projects "
+            "(logging, telemetry, common types). Should remain free "
+            "of business rules."
+        ),
+        "Tests": "Unit / integration test projects. Excluded from runtime topology.",
+        "Uncategorized": "Layer not detected — review the project's role manually.",
+        "Unknown": "Layer not detected — review the project's role manually.",
+    }
+
+    @staticmethod
+    def _summarize_symbols(symbols: list, max_per_kind: int = 5) -> Dict[str, List[str]]:
+        """Bucket code symbols by DDD role / kind for narrative inclusion."""
+        buckets: Dict[str, List[str]] = defaultdict(list)
+        for s in symbols or []:
+            name = getattr(s, "name", "") or ""
+            if not name:
+                continue
+            if getattr(s, "is_aggregate_root", False):
+                buckets["Aggregates"].append(name)
+            elif getattr(s, "is_value_object", False):
+                buckets["Value Objects"].append(name)
+            elif getattr(s, "is_domain_event", False):
+                buckets["Domain Events"].append(name)
+            elif getattr(s, "is_repository", False):
+                buckets["Repositories"].append(name)
+            elif getattr(s, "is_controller", False):
+                buckets["Controllers"].append(name)
+            else:
+                kind = (getattr(s, "kind", "") or "Other").title()
+                buckets[f"{kind}s"].append(name)
+        # de-dup and trim
+        return {k: sorted(set(v))[:max_per_kind] for k, v in buckets.items()}
+
+    @staticmethod
+    def _read_code_snippet(file_path: str, max_lines: int = 18) -> str:
+        """Return the first `max_lines` lines of a source file (best-effort).
+
+        Used to embed a representative C# snippet next to each project so
+        the doc reads more like a real architecture write-up than a flat
+        list of names. Silently returns empty string on any I/O error.
+        """
+        if not file_path:
+            return ""
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
+                lines = []
+                for i, line in enumerate(fh):
+                    if i >= max_lines:
+                        lines.append("// ... truncated ...")
+                        break
+                    lines.append(line.rstrip())
+            # Drop leading using/blank/namespace boilerplate so the snippet
+            # actually shows the type definition.
+            while lines and (
+                lines[0].startswith("using ")
+                or lines[0].startswith("//")
+                or not lines[0].strip()
+            ):
+                lines.pop(0)
+            return "\n".join(lines).strip()
+        except Exception:
+            return ""
+
+    def _representative_file_for(self, project) -> str:
+        """Pick the most descriptive source file for a project: first the
+        aggregate root or controller, otherwise the first symbol's file."""
+        symbols = list(project.code_symbols or [])
+        if not symbols:
+            return ""
+        # Prefer aggregates → controllers → repositories → first symbol
+        priority = (
+            [s for s in symbols if getattr(s, "is_aggregate_root", False)]
+            + [s for s in symbols if getattr(s, "is_controller", False)]
+            + [s for s in symbols if getattr(s, "is_repository", False)]
+            + symbols
+        )
+        for s in priority:
+            f = getattr(s, "file", "")
+            if f:
+                return f
+        return ""
+
+    def _arch_title(self, report: CrawlReport) -> str:
+        """Custom title for the architecture-doc structure."""
+        from src import __version__ as lumen_version
+        sln_name = report.solution.replace("\\", "/").split("/")[-1].replace(".sln", "")
+        # Project may be e.g. "CoreTax.sln" → use stem; fall back to "CoreTax"
+        title_stem = sln_name or "CoreTax"
+        llm_label = _describe_llm(self.llm)
+        return (
+            f"# {title_stem} - Architecture Documentation\n\n"
+            f"> Generated by **Lumen.AI Solution Crawler** v{lumen_version} using `{llm_label}`\n"
+            f"> Crawled at: {report.crawled_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            "This document follows the **Domain-Driven Design** (Eric Evans) and "
+            "**Clean Architecture** (Robert C. Martin) conventions. Each section "
+            "is generated from the actual code discovered during the crawl — "
+            "definitions, diagrams and code snippets are derived from real "
+            "projects, not boilerplate."
+        )
+
+    def _arch_1_bounded_contexts(self, report: CrawlReport) -> str:
+        """1. Bounded Context Definition — per project, with description + code snippet."""
+        lines = ["## 1. Bounded Context Definition", ""]
+        lines.append(
+            "A **bounded context** is the boundary within which a particular "
+            "domain model applies and the **ubiquitous language** is "
+            "consistent. Each project below represents (or contributes to) "
+            "a bounded context within the solution."
+        )
+        lines.append("")
+
+        if not report.projects:
+            lines.append("_No projects discovered._")
+            return "\n".join(lines)
+
+        # If business_domains are available, group projects under their domain;
+        # otherwise group by Clean-Architecture layer.
+        domains = report.business_domains or []
+        proj_by_name = {p.name: p for p in report.projects}
+
+        if domains:
+            for d in domains:
+                dname = getattr(d, "name", "Domain")
+                ddesc = getattr(d, "description", "") or ""
+                lines.append(f"### {dname}")
+                if ddesc:
+                    lines.append(f"_{ddesc}_")
+                    lines.append("")
+                for proj_name in (getattr(d, "projects", []) or []):
+                    proj = proj_by_name.get(proj_name)
+                    if proj:
+                        lines.extend(self._render_project_block(proj))
+                    else:
+                        lines.append(f"#### `{proj_name}`")
+                        lines.append("_Project metadata not captured by crawler._")
+                        lines.append("")
+            # Also include any project not assigned to a domain
+            assigned = {pn for d in domains for pn in (getattr(d, "projects", []) or [])}
+            unassigned = [p for p in report.projects if p.name not in assigned]
+            if unassigned:
+                lines.append("### Unassigned Projects")
+                lines.append("")
+                for p in unassigned:
+                    lines.extend(self._render_project_block(p))
+            return "\n".join(lines)
+
+        # Fallback: group by layer with narrative
+        grouped: Dict[str, List] = defaultdict(list)
+        for p in report.projects:
+            grouped[p.layer or "Uncategorized"].append(p)
+        order = ["Domain", "Application", "Infrastructure", "Presentation",
+                 "Worker", "Contracts", "Shared", "Tests", "Uncategorized", "Unknown"]
+        for layer in sorted(grouped.keys(),
+                            key=lambda x: order.index(x) if x in order else 99):
+            lines.append(f"### {layer} Layer")
+            blurb = self._LAYER_DESCRIPTION.get(layer)
+            if blurb:
+                lines.append(f"_{blurb}_")
+            lines.append("")
+            for proj in sorted(grouped[layer], key=lambda p: p.name):
+                lines.extend(self._render_project_block(proj))
+        return "\n".join(lines)
+
+    def _render_project_block(self, project) -> List[str]:
+        """Render a single project: heading, description, key types, snippet."""
+        out: List[str] = []
+        out.append(f"#### `{project.name}`")
+        layer_blurb = self._LAYER_DESCRIPTION.get(project.layer or "", "")
+        meta_bits = []
+        if project.layer:
+            meta_bits.append(f"**Layer:** {project.layer}")
+        if project.framework:
+            meta_bits.append(f"**Framework:** {project.framework}")
+        if project.references:
+            refs = ", ".join(f"`{r}`" for r in project.references[:6])
+            meta_bits.append(f"**References:** {refs}")
+        if meta_bits:
+            out.append(" • ".join(meta_bits))
+            out.append("")
+        if layer_blurb:
+            out.append(layer_blurb)
+            out.append("")
+
+        # Symbol summary by DDD role
+        buckets = self._summarize_symbols(project.code_symbols)
+        if buckets:
+            out.append("**Key types:**")
+            for kind, names in buckets.items():
+                if names:
+                    quoted = ", ".join(f"`{n}`" for n in names)
+                    out.append(f"- _{kind}_: {quoted}")
+            out.append("")
+
+        # Code snippet from the most representative file
+        rep_file = self._representative_file_for(project)
+        snippet = self._read_code_snippet(rep_file) if rep_file else ""
+        if snippet:
+            # Show file path relative to the project root for readability
+            rel = rep_file
+            try:
+                proj_dir = project.path
+                if proj_dir and rep_file.startswith(proj_dir):
+                    rel = rep_file[len(proj_dir):].lstrip("/\\")
+            except Exception:
+                pass
+            out.append(f"_Representative source — `{rel}`:_")
+            out.append("```csharp")
+            out.append(snippet)
+            out.append("```")
+            out.append("")
+        return out
+
+    @staticmethod
+    def _ddd_pattern_for(transport: str) -> str:
+        """Map a transport / contract type to a DDD strategic pattern label."""
+        t = (transport or "").lower()
+        if t in ("http", "rest", "https"):
+            return "Partnership (REST)"
+        if t == "grpc":
+            return "Customer-Supplier (gRPC)"
+        if t in ("rabbitmq", "kafka", "azure-servicebus", "sqs", "sns", "event"):
+            return "Upstream (Events)"
+        if t in ("file", "shared-db", "shareddb"):
+            return "Shared Kernel"
+        return transport or "Conformist"
+
+    def _arch_2_context_map(self, report: CrawlReport) -> str:
+        """2. Context Map — two views: a service-level architecture diagram
+        and a DDD strategic-pattern graph between bounded contexts."""
+        lines = ["## 2. Context Map", ""]
+        lines.append(
+            "A **Context Map** shows how bounded contexts relate across the "
+            "solution. Two views are provided: (1) a service-level "
+            "architecture showing each context as an independent .NET "
+            "service, and (2) a DDD strategic-pattern graph annotating the "
+            "kind of relationship between contexts (Partnership, "
+            "Customer-Supplier, Upstream/Downstream, Shared Kernel, "
+            "Anti-Corruption Layer)."
+        )
+        lines.append("")
+
+        contracts = report.domain_contracts or []
+        domains = report.business_domains or []
+
+        if not contracts and not domains:
+            lines.append("_No domain contracts or business domains discovered._")
+            return "\n".join(lines)
+
+        # --- View 1: architecture-beta service diagram ----------------
+        if domains:
+            lines.append("### Service View (Architecture)")
+            lines.append("")
+            sln_stem = (
+                report.solution.replace("\\", "/").split("/")[-1]
+                .replace(".sln", "")
+                or "Solution"
+            )
+            group_id = re.sub(r"[^A-Za-z0-9_]", "_", sln_stem).lower() or "api"
+            lines.append("```mermaid")
+            lines.append("architecture-beta")
+            lines.append(f"    group {group_id}(logos:dotnet) [{sln_stem}]")
+            lines.append("")
+            svc_ids: Dict[str, str] = {}
+            for d in domains:
+                dname = getattr(d, "name", "") or ""
+                if not dname:
+                    continue
+                sid = re.sub(r"[^A-Za-z0-9_]", "_", dname).lower()[:24] or "svc"
+                # Ensure uniqueness
+                base = sid
+                i = 1
+                while sid in svc_ids.values():
+                    i += 1
+                    sid = f"{base}{i}"
+                svc_ids[dname] = sid
+                lines.append(
+                    f"    service {sid}(logos:dotnet) [{dname} Context] "
+                    f"in {group_id}"
+                )
+            lines.append("")
+            seen_svc_edges = set()
+            for c in contracts:
+                src = getattr(c, "source_domain", "") or getattr(c, "source", "")
+                tgt = getattr(c, "target_domain", "") or getattr(c, "target", "")
+                if not (src and tgt) or src not in svc_ids or tgt not in svc_ids:
+                    continue
+                key = (svc_ids[src], svc_ids[tgt])
+                if key in seen_svc_edges:
+                    continue
+                seen_svc_edges.add(key)
+                lines.append(f"    {svc_ids[src]}:R -- L:{svc_ids[tgt]}")
+            lines.append("```")
+            lines.append("")
+
+        # --- View 2: DDD strategic-pattern graph ----------------------
+        if domains:
+            lines.append("### Bounded Context DDD Map")
+            lines.append("")
+            lines.append("```mermaid")
+            lines.append("graph TD")
+            lines.append("    %% Define Contexts")
+            bc_ids: Dict[str, str] = {}
+            for d in domains:
+                dname = getattr(d, "name", "") or ""
+                if not dname:
+                    continue
+                bid = re.sub(r"[^A-Za-z0-9_]", "_", dname) + "BC"
+                bc_ids[dname] = bid
+                lines.append(f'    {bid}["{dname} Context"]')
+            lines.append("")
+            lines.append("    %% Define Relationships with DDD Patterns")
+            seen_ddd_edges = set()
+            for c in contracts:
+                src = getattr(c, "source_domain", "") or getattr(c, "source", "")
+                tgt = getattr(c, "target_domain", "") or getattr(c, "target", "")
+                trans = getattr(c, "transport", "") or getattr(c, "type", "")
+                if not (src and tgt) or src not in bc_ids or tgt not in bc_ids:
+                    continue
+                pattern = self._ddd_pattern_for(trans)
+                key = (bc_ids[src], bc_ids[tgt], pattern)
+                if key in seen_ddd_edges:
+                    continue
+                seen_ddd_edges.add(key)
+                lines.append(
+                    f'    {bc_ids[src]} -- "{pattern}" --> {bc_ids[tgt]}'
+                )
+            # Styling: colour the first two contexts for visual anchor
+            if bc_ids:
+                dnames = list(bc_ids.keys())
+                lines.append("")
+                lines.append("    %% Styling")
+                if len(dnames) >= 1:
+                    lines.append(
+                        f"    style {bc_ids[dnames[0]]} "
+                        "fill:#f9f,stroke:#333,stroke-width:2px"
+                    )
+                if len(dnames) >= 2:
+                    lines.append(
+                        f"    style {bc_ids[dnames[1]]} "
+                        "fill:#ccf,stroke:#333,stroke-width:2px"
+                    )
+            lines.append("```")
+            lines.append("")
+
+            # Legend
+            lines.append("**DDD Relationship Patterns used above:**")
+            lines.append("")
+            lines.append(
+                "- **Partnership (REST)** — two contexts cooperate via "
+                "synchronous HTTP contracts; they succeed or fail together."
+            )
+            lines.append(
+                "- **Customer-Supplier (gRPC)** — upstream supplier exposes "
+                "a strongly-typed contract that the downstream customer depends on."
+            )
+            lines.append(
+                "- **Upstream (Events)** — publishes domain events; "
+                "downstream contexts subscribe asynchronously."
+            )
+            lines.append(
+                "- **Shared Kernel** — two contexts share a small, explicitly "
+                "agreed-upon model (e.g. shared DB or file)."
+            )
+            lines.append(
+                "- **Conformist** — downstream conforms to an upstream model "
+                "it cannot influence."
+            )
+            lines.append("")
+
+        # --- Cross-Context Contracts table ----------------------------
+        if contracts:
+            lines.append("### Cross-Context Contracts")
+            lines.append("")
+            lines.append("| Source | Target | Transport | DDD Pattern | Contract |")
+            lines.append("|--------|--------|-----------|-------------|----------|")
+            for c in contracts:
+                src = getattr(c, "source_domain", "") or getattr(c, "source", "")
+                tgt = getattr(c, "target_domain", "") or getattr(c, "target", "")
+                trans = getattr(c, "transport", "") or getattr(c, "type", "")
+                contract = getattr(c, "contract", "") or getattr(c, "message_type", "")
+                pattern = self._ddd_pattern_for(trans)
+                lines.append(
+                    f"| {src or '—'} | {tgt or '—'} | {trans or '—'} "
+                    f"| {pattern} | {contract or '—'} |"
+                )
+        return "\n".join(lines)
+
+    _DDD_ROLE_BLURB = {
+        "Entities": (
+            "An **Entity** has a distinct identity that persists across state "
+            "changes. Two entities are equal only if their identifiers match, "
+            "even if all other attributes are identical."
+        ),
+        "Value Objects": (
+            "A **Value Object** has no identity — it is defined entirely by "
+            "its attributes. It is immutable; equality is structural."
+        ),
+        "Aggregates": (
+            "An **Aggregate** is a cluster of domain objects treated as a "
+            "single consistency boundary. External code interacts only with "
+            "the aggregate root, which enforces invariants for the whole cluster."
+        ),
+        "Repositories": (
+            "A **Repository** encapsulates the persistence of an aggregate, "
+            "hiding storage concerns behind a collection-like interface "
+            "over the domain."
+        ),
+        "Factories": (
+            "A **Factory** encapsulates the complex construction of an "
+            "aggregate or entity, ensuring the resulting object is valid "
+            "from the moment of creation."
+        ),
+    }
+
+    def _render_symbol_block(self, proj_name: str, sym) -> List[str]:
+        """Render a single DDD symbol: heading, project, properties, code snippet."""
+        out: List[str] = []
+        nm = getattr(sym, "name", "") or "Unknown"
+        out.append(f"#### `{nm}`")
+        meta = [f"**Project:** `{proj_name}`"]
+        kind = getattr(sym, "kind", "")
+        if kind:
+            meta.append(f"**Kind:** {kind}")
+        out.append(" • ".join(meta))
+        out.append("")
+
+        props = getattr(sym, "properties", []) or []
+        if not props:
+            members = getattr(sym, "members", []) or []
+            props = [getattr(m, "name", str(m)) for m in members][:8]
+        if props:
+            quoted = ", ".join(f"`{p}`" for p in list(props)[:8])
+            out.append(f"**Members:** {quoted}")
+            out.append("")
+
+        f = getattr(sym, "file", "") or ""
+        snippet = self._read_code_snippet(f) if f else ""
+        if snippet:
+            rel = f.replace("\\", "/").split("/")[-1]
+            out.append(f"_Source — `{rel}`:_")
+            out.append("```csharp")
+            out.append(snippet)
+            out.append("```")
+            out.append("")
+        return out
+
+    def _arch_3_domain_model(self, report: CrawlReport) -> str:
+        """3. Domain Model — entities, value objects, aggregates, repos, factories, class diagram."""
+        lines = ["## 3. Domain Model", ""]
+        lines.append(
+            "The domain model captures the heart of the business. The types "
+            "below were extracted from the Domain layer and classified by "
+            "DDD role using naming conventions and tactical attributes."
+        )
+        lines.append("")
+
+        # Classify code symbols by DDD role using name heuristics.
+        entities: List = []
+        value_objects: List = []
+        aggregates: List = []
+        repositories: List = []
+        factories: List = []
+
+        for p in report.projects:
+            for sym in (p.code_symbols or []):
+                kind = (getattr(sym, "kind", "") or "").lower()
+                name = getattr(sym, "name", "") or ""
+                role = (getattr(sym, "ddd_role", "") or "").lower()
+                lower = name.lower()
+                if kind not in ("class", "struct", "record", "interface"):
+                    continue
+                if role == "aggregateroot" or "aggregate" in lower:
+                    aggregates.append((p.name, sym))
+                elif role == "valueobject" or lower.endswith("vo") or "value" in lower:
+                    value_objects.append((p.name, sym))
+                elif role == "repository" or lower.endswith("repository") or lower.endswith("repo"):
+                    repositories.append((p.name, sym))
+                elif role == "factory" or lower.endswith("factory"):
+                    factories.append((p.name, sym))
+                elif role == "entity" or kind in ("class", "record"):
+                    entities.append((p.name, sym))
+
+        # Also fall back to data_models if no code symbols.
+        if not entities and report.data_models:
+            entities = [(dm.db_context or "DbContext", dm) for dm in report.data_models]
+
+        def _section(title: str, items: List, per_item_cap: int = 8) -> List[str]:
+            sub = [f"### {title}", ""]
+            blurb = self._DDD_ROLE_BLURB.get(title, "")
+            if blurb:
+                sub.append(blurb)
+                sub.append("")
+            if not items:
+                sub.append(f"_No {title.lower()} discovered._")
+                sub.append("")
+                return sub
+            for proj, item in items[:per_item_cap]:
+                sub.extend(self._render_symbol_block(proj, item))
+            if len(items) > per_item_cap:
+                sub.append(
+                    f"_…and {len(items) - per_item_cap} more "
+                    f"{title.lower()} — full list available in the crawl JSON._"
+                )
+                sub.append("")
+            return sub
+
+        lines.extend(_section("Entities", entities))
+        lines.extend(_section("Value Objects", value_objects))
+        lines.extend(_section("Aggregates", aggregates))
+        lines.extend(_section("Repositories", repositories))
+        lines.extend(_section("Factories", factories))
+
+        # Class diagram for top entities + aggregates (cap at 12 to keep readable)
+        diagram_targets = (aggregates + entities)[:12]
+        if diagram_targets:
+            lines.append("### Class Diagram")
+            lines.append("")
+            lines.append("```mermaid")
+            lines.append("classDiagram")
+
+            def _clean_member(raw: str) -> str:
+                """Convert 'Id (int)' → 'int Id', 'Name : string' → 'string Name',
+                strip anything mermaid's classDiagram grammar will reject."""
+                s = str(raw).strip()
+                # 'Name (Type)' pattern
+                m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]+)\)$", s)
+                if m:
+                    return f"{m.group(2).strip()} {m.group(1).strip()}"
+                # 'Name: Type' pattern
+                if ":" in s:
+                    nm, _, ty = s.partition(":")
+                    return f"{ty.strip()} {nm.strip()}"
+                # strip anything weird — keep alnum/underscore only
+                return re.sub(r"[^A-Za-z0-9_ ]+", "_", s)
+
+            for _, item in diagram_targets:
+                nm = getattr(item, "name", "")
+                if not nm:
+                    continue
+                safe = re.sub(r"[^A-Za-z0-9_]", "_", nm)
+                lines.append(f"  class {safe} {{")
+                props = getattr(item, "properties", []) or []
+                if not props:
+                    members = getattr(item, "members", []) or []
+                    props = [getattr(m, "name", str(m)) for m in members]
+                for p in (props or [])[:8]:
+                    lines.append(f"    +{_clean_member(p)}")
+                lines.append("  }")
+            # Aggregate → entity composition where we can detect it
+            for _, agg in aggregates[:6]:
+                anm = getattr(agg, "name", "")
+                if not anm:
+                    continue
+                a_safe = re.sub(r"[^A-Za-z0-9_]", "_", anm)
+                for _, ent in entities[:6]:
+                    enm = getattr(ent, "name", "")
+                    if enm and enm != anm:
+                        e_safe = re.sub(r"[^A-Za-z0-9_]", "_", enm)
+                        lines.append(f"  {a_safe} *-- {e_safe}")
+                        break
+            lines.append("```")
+        return "\n".join(lines)
+
+    def _arch_4_domain_event_catalogue(self, report: CrawlReport) -> str:
+        """4. Domain Event Catalogue — derived from MassTransit consumers."""
+        lines = ["## 4. Domain Event Catalogue", ""]
+        lines.append(
+            "A **domain event** represents something meaningful that has "
+            "happened in the domain. Events are published by aggregates and "
+            "handled asynchronously by consumers, enabling loose coupling "
+            "between bounded contexts."
+        )
+        lines.append("")
+        consumers = report.consumers or []
+        if not consumers:
+            lines.append("_No domain events / message consumers discovered._")
+            return "\n".join(lines)
+
+        # Summary table first
+        lines.append("### Summary")
+        lines.append("")
+        lines.append("| Event / Message | Consumer | Queue |")
+        lines.append("|-----------------|----------|-------|")
+        for c in consumers:
+            msg = (c.message_type or "").split(".")[-1]
+            consumer = (c.consumer_class or "").split(".")[-1]
+            lines.append(
+                f"| {msg or '—'} | {consumer or '—'} | {c.queue or '—'} |"
+            )
+        lines.append("")
+
+        # Per-consumer detail with code snippet
+        lines.append("### Consumer Details")
+        lines.append("")
+        for c in consumers[:12]:
+            msg_short = (c.message_type or "").split(".")[-1] or "Event"
+            consumer_short = (c.consumer_class or "").split(".")[-1] or "Consumer"
+            lines.append(f"#### `{msg_short}` → `{consumer_short}`")
+            meta = []
+            if c.queue:
+                meta.append(f"**Queue:** `{c.queue}`")
+            if c.message_type:
+                meta.append(f"**Message:** `{c.message_type}`")
+            if meta:
+                lines.append(" • ".join(meta))
+                lines.append("")
+            lines.append(
+                f"When a `{msg_short}` event is published to the message bus, "
+                f"`{consumer_short}` receives and processes it, triggering "
+                f"the associated domain behavior."
+            )
+            lines.append("")
+            snippet = self._read_code_snippet(c.file) if c.file else ""
+            if snippet:
+                rel = (c.file or "").replace("\\", "/").split("/")[-1]
+                lines.append(f"_Source — `{rel}`:_")
+                lines.append("```csharp")
+                lines.append(snippet)
+                lines.append("```")
+                lines.append("")
+        if len(consumers) > 12:
+            lines.append(
+                f"_…and {len(consumers) - 12} more consumers — "
+                f"see the summary table above._"
+            )
+        return "\n".join(lines)
+
+    def _classify_layer_artifacts(
+        self, report: CrawlReport
+    ) -> Dict[str, Dict[str, bool]]:
+        """Detect which kinds of artifacts each Clean-Arch layer actually
+        contains in this solution. Returns {layer: {artifact_key: True}}.
+
+        Artifact keys roughly follow Clean Architecture conventions:
+          - Presentation: Controllers, Filters, ViewModels
+          - Application:  Commands, Queries, Services, Interfaces, DTOs
+          - Domain:       Entities, ValueObjects, DomainServices, DomainEvents, Exceptions
+          - Infrastructure: Persistence, Identity, Messaging, ExternalApis
+          - Worker:       Consumers, Schedulers
+        """
+        out: Dict[str, Dict[str, bool]] = defaultdict(dict)
+        for p in report.projects:
+            layer = p.layer or "Unknown"
+            for s in (p.code_symbols or []):
+                name = (getattr(s, "name", "") or "")
+                lname = name.lower()
+                role = (getattr(s, "ddd_role", "") or "").lower()
+                if getattr(s, "is_controller", False) or lname.endswith("controller"):
+                    out[layer]["Controllers"] = True
+                if "filter" in lname or "middleware" in lname:
+                    out[layer]["Filters"] = True
+                if lname.endswith("viewmodel") or lname.endswith("vm"):
+                    out[layer]["ViewModels"] = True
+                if lname.endswith("command") or lname.endswith("commandhandler"):
+                    out[layer]["Commands"] = True
+                if lname.endswith("query") or lname.endswith("queryhandler"):
+                    out[layer]["Queries"] = True
+                if lname.endswith("service") and layer == "Application":
+                    out[layer]["Services"] = True
+                if lname.endswith("service") and layer == "Domain":
+                    out[layer]["DomainServices"] = True
+                if lname.endswith("dto") or lname.endswith("response") or lname.endswith("request"):
+                    if layer == "Application":
+                        out[layer]["DTOs"] = True
+                if getattr(s, "is_repository", False) or lname.endswith("repository"):
+                    if (getattr(s, "kind", "") or "").lower() == "interface":
+                        out.setdefault("Application", {})["Interfaces"] = True
+                    else:
+                        out.setdefault("Infrastructure", {})["Persistence"] = True
+                if role == "valueobject" or lname.endswith("vo"):
+                    out[layer]["ValueObjects"] = True
+                if role == "aggregateroot" or role == "entity":
+                    out[layer]["Entities"] = True
+                if getattr(s, "is_domain_event", False) or "event" in lname and layer == "Domain":
+                    out[layer]["DomainEvents"] = True
+                if lname.endswith("exception"):
+                    out[layer]["Exceptions"] = True
+                if "dbcontext" in lname or "efcontext" in lname:
+                    out.setdefault("Infrastructure", {})["Persistence"] = True
+                if "identity" in lname or "jwt" in lname or "auth" in lname:
+                    out.setdefault("Infrastructure", {})["Identity"] = True
+                if "client" in lname and layer == "Infrastructure":
+                    out[layer]["ExternalApis"] = True
+        # Worker-layer artifacts come from consumers/schedulers
+        if report.consumers:
+            out.setdefault("Worker", {})["Consumers"] = True
+        if report.schedulers:
+            out.setdefault("Worker", {})["Schedulers"] = True
+        # Messaging in infra if we found any async integrations
+        for ig in (report.integrations or []):
+            t = (getattr(ig, "type", "") or "").lower()
+            if t in {"rabbitmq", "kafka", "azure-servicebus"}:
+                out.setdefault("Infrastructure", {})["Messaging"] = True
+        return out
+
+    # Display labels for artifact nodes + fallback ordering
+    _LAYER_ARTIFACT_DISPLAY = {
+        "Presentation": [
+            ("Controllers", "Controllers / Endpoints"),
+            ("ViewModels", "ViewModels"),
+            ("Filters", "Action Filters / Middlewares"),
+        ],
+        "Application": [
+            ("Commands", "Commands (CQRS)"),
+            ("Queries", "Queries (CQRS)"),
+            ("Services", "Application Services"),
+            ("Interfaces", "Repository Interfaces"),
+            ("DTOs", "DTOs"),
+        ],
+        "Domain": [
+            ("Entities", "Domain Entities / Aggregates"),
+            ("ValueObjects", "Value Objects"),
+            ("DomainServices", "Domain Services"),
+            ("DomainEvents", "Domain Events"),
+            ("Exceptions", "Domain Exceptions"),
+        ],
+        "Infrastructure": [
+            ("Persistence", "Persistence / EF Core DbContext"),
+            ("Identity", "Identity / JWT Auth"),
+            ("Messaging", "Messaging / MassTransit"),
+            ("ExternalApis", "External APIs / Logging"),
+        ],
+        "Worker": [
+            ("Consumers", "Message Consumers"),
+            ("Schedulers", "Schedulers / Background Jobs"),
+        ],
+    }
+
+    _LAYER_SUBTITLE = {
+        "Presentation": ".NET Web API / Angular",
+        "Application": "Core / Use Cases",
+        "Domain": "Core / Entities",
+        "Infrastructure": "External Concerns",
+        "Worker": "Background / Message Handlers",
+    }
+
+    def _arch_5_clean_architecture(self, report: CrawlReport) -> str:
+        """5. Clean Architecture Diagram — layer subgraphs with artifact nodes.
+
+        Dependency arrows all point inward toward the Domain core,
+        matching the canonical Clean Architecture rule.
+        """
+        lines = ["## 5. Clean Architecture Diagram", ""]
+        lines.append(
+            "The solution follows the **Clean Architecture** style: the "
+            "Domain layer sits at the core with no outward dependencies; "
+            "all other layers depend inward. The diagram below shows the "
+            "kinds of artifacts discovered in each layer and the allowed "
+            "dependency directions — all arrows point toward the Domain core."
+        )
+        lines.append("")
+
+        # Project → layer mapping (still useful as a separate table)
+        layered: Dict[str, List[str]] = defaultdict(list)
+        for p in report.projects:
+            layered[p.layer or "Unknown"].append(p.name)
+        if not layered:
+            lines.append("_No project layer information available._")
+            return "\n".join(lines)
+
+        # Detect which artifact kinds exist per layer
+        artifacts = self._classify_layer_artifacts(report)
+
+        # Build mermaid graph
+        lines.append("```mermaid")
+        lines.append("graph TD")
+
+        layer_ids: Dict[str, str] = {}
+
+        def _emit_layer(layer_key: str) -> str:
+            projects_here = layered.get(layer_key, [])
+            if not projects_here and not artifacts.get(layer_key):
+                return ""
+            sg_id = re.sub(r"[^A-Za-z0-9_]", "_", layer_key) + "_L"
+            subtitle = self._LAYER_SUBTITLE.get(layer_key, "")
+            label = f"{layer_key} Layer"
+            if subtitle:
+                label += f" ({subtitle})"
+            lines.append(f'  subgraph {sg_id} ["{label}"]')
+            # Emit artifact nodes for this layer
+            emitted_any = False
+            for key, display in self._LAYER_ARTIFACT_DISPLAY.get(layer_key, []):
+                if artifacts.get(layer_key, {}).get(key):
+                    node_id = f"{sg_id}_{key}"
+                    lines.append(f'    {node_id}["{display}"]')
+                    emitted_any = True
+            # If no typed artifacts were detected, fall back to project names
+            if not emitted_any:
+                for n in sorted(projects_here):
+                    safe = re.sub(r"[^A-Za-z0-9_]", "_", n)
+                    lines.append(f'    {sg_id}_{safe}["{n}"]')
+            lines.append("  end")
+            return sg_id
+
+        pres_id = _emit_layer("Presentation")
+        app_id = _emit_layer("Application")
+        dom_id = _emit_layer("Domain")
+        infra_id = _emit_layer("Infrastructure")
+        worker_id = _emit_layer("Worker")
+
+        # Dependency arrows — all point inward toward Domain
+        if pres_id and app_id:
+            lines.append(f"  {pres_id} --> {app_id}")
+        if app_id and dom_id:
+            lines.append(f"  {app_id} --> {dom_id}")
+        if infra_id and app_id:
+            lines.append(f"  {infra_id} --> {app_id}")
+        if infra_id and dom_id:
+            lines.append(f"  {infra_id} --> {dom_id}")
+        if worker_id and app_id:
+            lines.append(f"  {worker_id} --> {app_id}")
+        lines.append("")
+        lines.append(
+            "  %% All arrows point inward toward the Domain core "
+            "(Clean Architecture dependency rule)"
+        )
+        lines.append("```")
+        lines.append("")
+
+        # Narrative list of what was actually found per layer
+        lines.append("### Artifacts Discovered per Layer")
+        lines.append("")
+        for layer_key in ["Presentation", "Application", "Domain",
+                          "Infrastructure", "Worker"]:
+            found = [
+                display
+                for key, display in self._LAYER_ARTIFACT_DISPLAY.get(layer_key, [])
+                if artifacts.get(layer_key, {}).get(key)
+            ]
+            if not found and not layered.get(layer_key):
+                continue
+            lines.append(f"- **{layer_key}**: "
+                         + (", ".join(found) if found else "_no typed artifacts detected_"))
+        lines.append("")
+
+        # Keep the project → layer assignment table for traceability
+        order = ["Domain", "Application", "Infrastructure", "Presentation",
+                 "Worker", "Shared", "Tests", "Unknown"]
+        ordered_layers = sorted(
+            layered.items(),
+            key=lambda kv: order.index(kv[0]) if kv[0] in order else 99,
+        )
+        lines.append("### Project → Layer Assignment")
+        lines.append("")
+        lines.append("| Layer | Projects |")
+        lines.append("|-------|----------|")
+        for layer, names in ordered_layers:
+            lines.append(f"| {layer} | {', '.join(sorted(names))} |")
+        return "\n".join(lines)
+
+    def _arch_6_sequence_diagrams(self, report: CrawlReport) -> str:
+        """6. Sequence Diagram (Controller → Read Model)."""
+        lines = ["## 6. Sequence Diagram (Controller → Read Model)", ""]
+        endpoints = report.endpoints or []
+        if not endpoints:
+            lines.append("_No HTTP endpoints discovered to trace._")
+            return "\n".join(lines)
+
+        # Pick up to 3 representative endpoints (prefer GET — read-side flows)
+        gets = [e for e in endpoints if e.method.upper() == "GET"]
+        sample = (gets or endpoints)[:3]
+
+        for ep in sample:
+            ctrl = (ep.controller or "Controller").split(".")[-1]
+            req = (ep.request_model or "").split(".")[-1] or "Request"
+            resp = (ep.response_model or "").split(".")[-1] or "ReadModel"
+            lines.append(f"### {ep.method} {ep.route}")
+            lines.append("")
+            lines.append(
+                f"Handled by **`{ctrl}`**, this endpoint takes a `{req}` "
+                f"and returns a `{resp}`. The request flows from the "
+                f"presentation layer through the application layer down to "
+                f"the domain and repository, reading from the database on "
+                f"the way back out."
+            )
+            lines.append("")
+            ep_file = getattr(ep, "file", "") or ""
+            snippet = self._read_code_snippet(ep_file) if ep_file else ""
+            if snippet:
+                rel = ep_file.replace("\\", "/").split("/")[-1]
+                lines.append(f"_Controller source — `{rel}`:_")
+                lines.append("```csharp")
+                lines.append(snippet)
+                lines.append("```")
+                lines.append("")
+            lines.append("```mermaid")
+            lines.append("sequenceDiagram")
+            lines.append("  participant Client")
+            lines.append(f"  participant {ctrl}")
+            lines.append("  participant Application")
+            lines.append("  participant Domain")
+            lines.append("  participant Repository")
+            lines.append("  participant Database")
+            lines.append(f"  Client->>{ctrl}: {ep.method} {ep.route} ({req})")
+            lines.append(f"  {ctrl}->>Application: Handle({req})")
+            lines.append("  Application->>Domain: invoke business rule")
+            lines.append("  Application->>Repository: query")
+            lines.append("  Repository->>Database: SELECT")
+            lines.append("  Database-->>Repository: rows")
+            lines.append(f"  Repository-->>Application: {resp}")
+            lines.append(f"  Application-->>{ctrl}: {resp}")
+            lines.append(f"  {ctrl}-->>Client: 200 OK ({resp})")
+            lines.append("```")
+            lines.append("")
+        return "\n".join(lines)
+
+    def _render_integration_block(self, ig) -> List[str]:
+        """Per-integration narrative + code snippet."""
+        out: List[str] = []
+        src = getattr(ig, "source_service", "") or "—"
+        tgt = getattr(ig, "target", "") or "—"
+        transport = getattr(ig, "type", "") or "—"
+        contract = getattr(ig, "contract", "") or ""
+        out.append(f"#### `{src}` → `{tgt}` ({transport})")
+        if contract:
+            out.append(f"**Contract:** `{contract}`")
+            out.append("")
+        out.append(
+            f"`{src}` communicates with `{tgt}` over `{transport}`"
+            + (f", exchanging `{contract}`." if contract else ".")
+        )
+        out.append("")
+        f = getattr(ig, "file", "") or ""
+        snippet = self._read_code_snippet(f) if f else ""
+        if snippet:
+            rel = f.replace("\\", "/").split("/")[-1]
+            out.append(f"_Source — `{rel}`:_")
+            out.append("```csharp")
+            out.append(snippet)
+            out.append("```")
+            out.append("")
+        return out
+
+    def _arch_7_event_stream(self, report: CrawlReport) -> str:
+        """7. Event Stream — synchronous (HTTP/gRPC) and asynchronous (queues)."""
+        lines = ["## 7. Event Stream", ""]
+        lines.append(
+            "Bounded contexts interact via two complementary styles: "
+            "**synchronous** calls (HTTP / gRPC) for request/response where "
+            "the caller needs an immediate answer, and **asynchronous** "
+            "messaging (queues / topics) for fire-and-forget events where "
+            "loose coupling and temporal decoupling matter more than latency."
+        )
+        lines.append("")
+        sync_transports = {"http", "grpc"}
+        async_transports = {"rabbitmq", "kafka", "azure-servicebus", "sqs", "sns"}
+
+        sync_items = []
+        async_items = []
+        for ig in (report.integrations or []):
+            t = (ig.type or "").lower()
+            if t in sync_transports:
+                sync_items.append(ig)
+            elif t in async_transports:
+                async_items.append(ig)
+
+        lines.append("### Synchronous (Request/Response)")
+        lines.append("")
+        if sync_items:
+            lines.append("| Source | Target | Transport | Contract |")
+            lines.append("|--------|--------|-----------|----------|")
+            for ig in sync_items:
+                lines.append(
+                    f"| {ig.source_service or '—'} | {ig.target or '—'} | "
+                    f"{ig.type} | {ig.contract or '—'} |"
+                )
+            lines.append("")
+            for ig in sync_items[:8]:
+                lines.extend(self._render_integration_block(ig))
+        else:
+            lines.append("_No synchronous integrations discovered._")
+        lines.append("")
+
+        lines.append("### Asynchronous (Event-Driven)")
+        lines.append("")
+        consumers = report.consumers or []
+        if async_items or consumers:
+            lines.append("| Source / Producer | Target / Consumer | Transport | Message |")
+            lines.append("|-------------------|-------------------|-----------|---------|")
+            for ig in async_items:
+                lines.append(
+                    f"| {ig.source_service or '—'} | {ig.target or '—'} | "
+                    f"{ig.type} | {ig.contract or '—'} |"
+                )
+            for c in consumers:
+                short_msg = (c.message_type or "").split(".")[-1] or "—"
+                short_consumer = (c.consumer_class or "").split(".")[-1] or "—"
+                lines.append(
+                    f"| (publisher) | {short_consumer} | rabbitmq ({c.queue or 'default'}) "
+                    f"| {short_msg} |"
+                )
+            lines.append("")
+            for ig in async_items[:8]:
+                lines.extend(self._render_integration_block(ig))
+
+            if consumers:
+                lines.append("#### Async Consumers (Detail)")
+                lines.append("")
+                lines.append(
+                    "Consumers subscribe to queues and process messages "
+                    "published by other services. See section 4 for the "
+                    "full event catalogue with code snippets."
+                )
+                lines.append("")
+        else:
+            lines.append("_No asynchronous events / consumers discovered._")
+        return "\n".join(lines)
+
+    def _arch_8_glossary(self, report: CrawlReport) -> str:
+        """8. Glossary (Ubiquitous Language) — terms collected from domain artifacts."""
+        lines = ["## 8. Glossary (Ubiquitous Language — CoreTax)", ""]
+        terms: Dict[str, str] = {}
+
+        # Pull domain names + descriptions
+        for d in (report.business_domains or []):
+            name = getattr(d, "name", "")
+            desc = getattr(d, "description", "") or ""
+            if name and name not in terms:
+                terms[name] = desc or f"Bounded context covering {name}-related capabilities."
+
+        # Pull aggregate / entity names from code symbols
+        for p in report.projects:
+            for sym in (p.code_symbols or []):
+                kind = (getattr(sym, "kind", "") or "").lower()
+                role = (getattr(sym, "ddd_role", "") or "").lower()
+                name = getattr(sym, "name", "") or ""
+                if not name or name in terms:
+                    continue
+                if role in ("aggregateroot", "entity", "valueobject"):
+                    terms[name] = f"{role.title()} in `{p.name}`."
+                elif kind in ("class", "record") and len(terms) < 60:
+                    terms[name] = f"Type defined in `{p.name}`."
+
+        # Pull message types as domain events
+        for c in (report.consumers or []):
+            short = (c.message_type or "").split(".")[-1]
+            if short and short not in terms:
+                terms[short] = "Domain event / integration message."
+
+        if not terms:
+            lines.append("_No domain vocabulary discovered._")
+            return "\n".join(lines)
+
+        lines.append("| Term | Definition |")
+        lines.append("|------|------------|")
+        for term in sorted(terms.keys(), key=str.lower):
+            definition = terms[term].replace("|", "\\|")
+            lines.append(f"| **{term}** | {definition} |")
         return "\n".join(lines)

@@ -53,15 +53,23 @@ def build_rag_prompt(
     Returns:
         Tuple of (system_prompt, user_prompt)
     """
-    # Build context block from retrieved chunks
+    # Build context block from retrieved chunks.
+    # Cap total context to ~6000 chars (~1500 tokens) to leave room for
+    # the model to generate a full answer (especially on 8K-context models).
+    MAX_CONTEXT_CHARS = int(__import__("os").environ.get("RAG_MAX_CONTEXT_CHARS", 6000))
     context_parts = []
+    total_chars = 0
     for i, chunk in enumerate(chunks, 1):
         source = chunk.source_file or chunk.metadata.source_file or "unknown"
         ctype = chunk.metadata.chunk_type if hasattr(chunk.metadata, "chunk_type") else "general"
-        context_parts.append(
+        part = (
             f"[Source {i}: {source} | Type: {ctype} | Score: {chunk.score:.2f}]\n"
             f"{chunk.content}"
         )
+        if total_chars + len(part) > MAX_CONTEXT_CHARS and context_parts:
+            break  # stop adding chunks — leave room for output
+        context_parts.append(part)
+        total_chars += len(part)
     context_block = "\n\n---\n\n".join(context_parts) if context_parts else "(No relevant context found)"
 
     # Build conversation history block
