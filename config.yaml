@@ -79,3 +79,26 @@ api:
 output:
   format: markdown
   directory: ./docs
+
+# === Sandbox (KT-Pro Phase 0) ===
+# All runtime paths/ports are resolved by src/ops/sandbox.py from the
+# SANDBOX_NAME env var. These knobs are informational — do NOT hard-code
+# paths here; use scripts/sandbox_start.sh to launch a branch build.
+sandbox:
+  port_offset: 10                     # prod_port + 10 = sandbox_port
+  base_dir: "knowledge_base/sandbox"  # sandbox state rooted here
+  collection_suffix_fmt: "__sandbox_{name}"
+
+# === KT-Pro Feature Flags ===
+# Each phase ships behind a flag. Default OFF until the phase is merged and
+# validated on the sandbox. Flip per-environment.
+kt_pro:
+  orphan_mode:      { enabled: false }   # Phase 1
+  six_personas:     { enabled: false }   # Phase 2
+  evidence_bar:     { enabled: false }   # Phase 3
+  citation_ratio:   { enabled: false }   # Phase 4
+  doc_style_essa:   { enabled: false }   # Phase 5
+  institutional_memory: { enabled: false }  # Phase 6
+  qa_matrix:        { enabled: false }   # Phase 7
+  diff_explorer:    { enabled: false }   # Phase 8
+  airgap_hardening: { enabled: false }   # Phase 9

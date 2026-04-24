@@ -7,6 +7,8 @@ import yaml
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.ops import sandbox
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,9 +31,11 @@ def _init_services(app: FastAPI, config: dict):
     from src.crawler.solution_crawler import SolutionCrawler
     from src.pipeline.ingestion import DocumentIngestionPipeline
 
-    # Knowledge store
+    # Knowledge store — sandbox owns the persist_dir so branch builds never
+    # write into the production knowledge base.
     ks_config = config.get("knowledge_store", {})
-    persist_dir = ks_config.get("persist_dir", "./knowledge_base")
+    ctx = sandbox.context()
+    persist_dir = str(ctx.paths.knowledge_root)
     embedding_provider = create_embedding_provider(config)
     store = VectorKnowledgeStore(
         persist_dir=persist_dir,
@@ -51,8 +55,9 @@ def _init_services(app: FastAPI, config: dict):
     reranker_config = ks_config.get("reranker", {})
     reranker = BM25VectorFusionReranker(alpha=reranker_config.get("alpha", 0.5))
 
-    # Conversation memory
-    memory = ConversationMemory(str(Path(persist_dir) / "conversations.db"))
+    # Conversation memory — path comes from sandbox so branch chat history
+    # never contaminates production.
+    memory = ConversationMemory(str(ctx.paths.conversations_db))
 
     # RAG engine
     rag_engine = RAGQueryEngine(
@@ -132,11 +137,12 @@ def create_app(config: dict = None) -> FastAPI:
 if __name__ == "__main__":
     import uvicorn
 
+    sandbox.bootstrap()
     config = _load_config()
     api_config = config.get("api", {})
     app = create_app(config)
     uvicorn.run(
         app,
         host=api_config.get("host", "0.0.0.0"),
-        port=api_config.get("port", 8080),
+        port=sandbox.context().ports.fastapi,
     )

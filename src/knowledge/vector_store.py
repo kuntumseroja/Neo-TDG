@@ -12,6 +12,7 @@ from chromadb.api.types import EmbeddingFunction, Documents, Embeddings
 from src.knowledge.embeddings import BaseEmbeddingProvider
 from src.knowledge.chunker import MarkdownChunker
 from src.models.knowledge import ChunkResult, ChunkMetadata
+from src.ops import sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +37,12 @@ class VectorKnowledgeStore:
         collection_name: str = "techdocgen_knowledge",
         chunker: Optional[MarkdownChunker] = None,
     ):
+        ctx = sandbox.context()
         self.persist_dir = persist_dir
         self.embedding_provider = embedding_provider
-        self.collection_name = collection_name
+        # In sandbox mode the collection is namespaced so two instances can
+        # share a single on-disk Chroma directory without colliding.
+        self.collection_name = collection_name + ctx.collection_suffix
         self.chunker = chunker or MarkdownChunker()
 
         # Ensure persist directory exists
@@ -48,14 +52,14 @@ class VectorKnowledgeStore:
         self._client = chromadb.PersistentClient(path=str(Path(persist_dir) / "chroma"))
         self._embedding_fn = _ChromaEmbeddingFunction(embedding_provider)
         self._collection = self._client.get_or_create_collection(
-            name=collection_name,
+            name=self.collection_name,
             embedding_function=self._embedding_fn,
             metadata={"hnsw:space": "cosine"},
         )
 
         logger.info(
             f"VectorKnowledgeStore initialized: {self._collection.count()} chunks "
-            f"in '{collection_name}' at {persist_dir}"
+            f"in '{self.collection_name}' at {persist_dir}"
         )
 
     def ingest_document(
