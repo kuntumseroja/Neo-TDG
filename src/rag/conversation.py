@@ -20,7 +20,12 @@ class ConversationMemory:
         self._init_db()
 
     def _init_db(self):
-        """Create tables if they don't exist."""
+        """Create tables if they don't exist, then migrate any new columns.
+
+        We use a migrate-lite pattern so existing sandboxes / prod DBs keep
+        working without a separate Alembic step: check `PRAGMA table_info`
+        and `ALTER TABLE ... ADD COLUMN` when a column is missing.
+        """
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS conversations (
@@ -46,6 +51,13 @@ class ConversationMemory:
                 ON messages(conversation_id, timestamp)
             """)
 
+            # Phase 1 — persona column on messages. Idempotent.
+            existing_cols = {
+                row[1] for row in conn.execute("PRAGMA table_info(messages)")
+            }
+            if "persona" not in existing_cols:
+                conn.execute("ALTER TABLE messages ADD COLUMN persona TEXT")
+
     def create_conversation(self, title: str = "") -> str:
         """Create a new conversation and return its ID."""
         conv_id = str(uuid.uuid4())
@@ -63,15 +75,16 @@ class ConversationMemory:
         role: str,
         content: str,
         sources: list = None,
+        persona: Optional[str] = None,
     ) -> None:
         """Add a message to a conversation."""
         now = datetime.utcnow().isoformat()
         sources_json = json.dumps(sources or [])
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO messages (conversation_id, role, content, sources, timestamp) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (conversation_id, role, content, sources_json, now),
+                "INSERT INTO messages (conversation_id, role, content, sources, persona, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (conversation_id, role, content, sources_json, persona, now),
             )
             conn.execute(
                 "UPDATE conversations SET updated_at = ?, title = CASE WHEN title = '' THEN ? ELSE title END WHERE id = ?",
@@ -83,7 +96,7 @@ class ConversationMemory:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT role, content, sources, timestamp FROM messages "
+                "SELECT role, content, sources, persona, timestamp FROM messages "
                 "WHERE conversation_id = ? ORDER BY timestamp DESC LIMIT ?",
                 (conversation_id, last_n * 2),  # *2 for user+assistant pairs
             ).fetchall()
@@ -93,6 +106,7 @@ class ConversationMemory:
                 "role": row["role"],
                 "content": row["content"],
                 "sources": json.loads(row["sources"]),
+                "persona": row["persona"] if "persona" in row.keys() else None,
                 "timestamp": row["timestamp"],
             }
             for row in reversed(rows)

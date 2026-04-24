@@ -1,7 +1,13 @@
 """RAG Chat page — conversational query interface."""
 
 import streamlit as st
+from src.rag.personas import PERSONAS, ALL_PERSONA_IDS, DEFAULT_PERSONA
 from src.ui.components import render_markdown_with_mermaid, render_sources, render_confidence_badge, render_carbon_tag
+
+
+def _six_personas_enabled() -> bool:
+    cfg = st.session_state.get("config") or {}
+    return bool(((cfg.get("kt_pro") or {}).get("six_personas") or {}).get("enabled"))
 
 
 def render_rag_chat():
@@ -12,6 +18,27 @@ def render_rag_chat():
     if not engine:
         st.warning("RAG engine not initialized. Please check Ollama connection and knowledge store settings.")
         return
+
+    # Persona selector — only visible when the six-persona flag is on.
+    # Falls back silently when off so existing users see no UI change.
+    persona = None
+    if _six_personas_enabled():
+        with st.sidebar:
+            st.subheader("Persona")
+            current = st.session_state.get("persona", DEFAULT_PERSONA)
+            if current not in ALL_PERSONA_IDS:
+                current = DEFAULT_PERSONA
+            persona = st.selectbox(
+                "Answer as",
+                options=list(ALL_PERSONA_IDS),
+                index=list(ALL_PERSONA_IDS).index(current),
+                format_func=lambda pid: PERSONAS[pid].display_name,
+                key="persona",
+                help=(
+                    "Changes the tone, depth, and strictness of the answer. "
+                    "L1/L2/L3 require every paragraph to cite a source."
+                ),
+            )
 
     # Mode selector
     col1, col2 = st.columns([2, 3])
@@ -108,6 +135,7 @@ def render_rag_chat():
                         mode=mode,
                         filters=filters if filters else None,
                         conversation_id=st.session_state.conversation_id,
+                        persona=persona,
                     )
             except Exception as e:
                 st.error(f"Retrieval failed: {e}")
@@ -267,6 +295,19 @@ def render_rag_chat():
             try:
                 result = engine.finalize_query(prompt, answer, prepared)
                 st.session_state.conversation_id = result.conversation_id
+                # The refusal path rewrites the answer in-place. Re-render
+                # so the user sees the structured "I don't know — here is
+                # where to look" block instead of the un-cited draft.
+                if result.refused and result.answer != answer:
+                    stream_placeholder.empty()
+                    render_markdown_with_mermaid(result.answer)
+                    answer = result.answer
+                if "low_citation_rate" in (result.warnings or []):
+                    st.warning(
+                        "The model struggled to cite every paragraph. "
+                        "Treat sentences without a `[file:Lx-Ly]` tag as "
+                        "lower confidence."
+                    )
             except Exception as e:
                 _logger.exception("finalize_query failed")
                 st.warning(f"Response shown but not saved to memory: {e}")

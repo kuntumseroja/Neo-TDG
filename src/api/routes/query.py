@@ -4,6 +4,8 @@ from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
+from src.models.knowledge import PersonaId
+
 router = APIRouter()
 
 
@@ -12,6 +14,7 @@ class QueryRequest(BaseModel):
     mode: str = "explain"  # explain|find|trace|impact|test
     filters: Optional[dict] = None
     conversation_id: Optional[str] = None
+    persona: Optional[PersonaId] = None  # Phase 1 — optional for back-compat.
 
 
 class QueryResponse(BaseModel):
@@ -21,6 +24,12 @@ class QueryResponse(BaseModel):
     related_topics: list = []
     diagram: Optional[str] = None
     conversation_id: Optional[str] = None
+    persona: Optional[str] = None
+    warnings: list = []
+    refused: bool = False
+    refusal_reason: Optional[str] = None
+    hints: list = []
+    suggested_prompts: list = []
 
 
 @router.post("/query", response_model=QueryResponse)
@@ -35,6 +44,7 @@ async def query(req: QueryRequest, request: Request):
         mode=req.mode,
         filters=req.filters,
         conversation_id=req.conversation_id,
+        persona=req.persona,
     )
 
     return QueryResponse(
@@ -44,4 +54,10 @@ async def query(req: QueryRequest, request: Request):
         related_topics=result.related_topics,
         diagram=result.diagram,
         conversation_id=result.conversation_id,
+        persona=result.persona,
+        warnings=result.warnings,
+        refused=result.refused,
+        refusal_reason=result.refusal_reason,
+        hints=result.hints,
+        suggested_prompts=result.suggested_prompts,
     )

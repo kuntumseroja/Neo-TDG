@@ -128,6 +128,7 @@ def initialize_services(config: dict):
         if llm:
             rag_engine = RAGQueryEngine(
                 store=store, llm=llm, reranker=reranker, conversation_memory=memory,
+                config=config,
             )
             st.session_state.rag_engine = rag_engine
 

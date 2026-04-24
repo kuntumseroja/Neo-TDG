@@ -1,7 +1,7 @@
 """Knowledge store data models."""
 
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Literal, Optional
 from datetime import datetime
 
 
@@ -44,3 +44,28 @@ class RAGResponse(BaseModel):
     diagram: Optional[str] = None  # Mermaid source
     mode: str = "explain"
     conversation_id: Optional[str] = None
+    # Persona that produced this answer (Phase 1; optional for legacy clients).
+    persona: Optional[str] = None
+    # Soft warnings surfaced by the pipeline (e.g. "low_citation_rate").
+    warnings: List[str] = Field(default_factory=list)
+    # Orphan-mode structured refusal. When refused=True, `answer` is a
+    # human-readable markdown block and the fields below give the UI the
+    # raw shape so it can render clickable hints.
+    refused: bool = False
+    refusal_reason: Optional[str] = None
+    hints: List[dict] = Field(default_factory=list)
+    suggested_prompts: List[str] = Field(default_factory=list)
+
+
+PersonaId = Literal["architect", "developer", "tester", "l1", "l2", "l3"]
+
+
+class QueryRequest(BaseModel):
+    """Request to the RAG engine. Shared by the Streamlit UI and HTTP routes."""
+    question: str
+    mode: str = "explain"  # explain|find|trace|impact|test
+    filters: Optional[dict] = None
+    conversation_id: Optional[str] = None
+    # Phase 1 — persona is optional; when six-persona flag is off the
+    # engine ignores it and falls back to the legacy prompt.
+    persona: Optional[PersonaId] = None

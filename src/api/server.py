@@ -62,6 +62,7 @@ def _init_services(app: FastAPI, config: dict):
     # RAG engine
     rag_engine = RAGQueryEngine(
         store=store, llm=llm, reranker=reranker, conversation_memory=memory,
+        config=config,
     ) if llm else None
 
     # Crawler

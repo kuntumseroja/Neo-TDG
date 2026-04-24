@@ -1,4 +1,21 @@
-"""RAG prompt templates for different query modes."""
+"""RAG prompt templates for different query modes.
+
+The legacy flow keeps a single hard-coded CoreTax system prompt
+(`SYSTEM_PROMPT`) so old call sites keep working verbatim. Phase 1 adds a
+persona-aware path via `build_rag_prompt(..., persona=...)`; when a persona
+is supplied and the registry knows it, the system prompt is rendered from
+`src.rag.personas` instead.
+
+Feature flag: `config.yaml : kt_pro.six_personas.enabled`. Call sites pass
+the persona id only when the flag is on — so legacy behaviour is
+byte-identical when the flag is off.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from src.rag.personas import PERSONAS, PersonaId, render_system_prompt
 
 SYSTEM_PROMPT = (
     "You are a CoreTax technical assistant. Answer questions about "
@@ -40,6 +57,9 @@ def build_rag_prompt(
     chunks: list,
     history: list = None,
     mode: str = "explain",
+    *,
+    persona: Optional[PersonaId] = None,
+    tenant: str = "CoreTax",
 ) -> tuple:
     """
     Build (system_prompt, user_prompt) for the RAG query.
@@ -49,6 +69,12 @@ def build_rag_prompt(
         chunks: List of ChunkResult objects
         history: List of {'role': str, 'content': str} dicts
         mode: Query mode (explain|find|trace|impact|test)
+        persona: Optional persona id. When supplied AND the id is known,
+            the system prompt is rendered from `src.rag.personas` and
+            includes the orphan-code preamble. When None or unknown, the
+            legacy `SYSTEM_PROMPT` is used verbatim.
+        tenant: Tenant name substituted into the persona system prompt
+            (Phase 6 will wire this per-request; for now a single tenant).
 
     Returns:
         Tuple of (system_prompt, user_prompt)
@@ -99,4 +125,9 @@ def build_rag_prompt(
 
     user_prompt = "\n".join(parts)
 
-    return SYSTEM_PROMPT, user_prompt
+    if persona and persona in PERSONAS:
+        system_prompt = render_system_prompt(persona, tenant=tenant)
+    else:
+        system_prompt = SYSTEM_PROMPT
+
+    return system_prompt, user_prompt

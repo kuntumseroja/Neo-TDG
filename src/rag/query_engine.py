@@ -9,8 +9,24 @@ from src.models.flow import FlowExplanation
 from src.rag.reranker import BM25VectorFusionReranker
 from src.rag.prompts import build_rag_prompt
 from src.rag.conversation import ConversationMemory
+from src.rag import personas as personas_mod
+from src.rag import citation_validator as cite_mod
 
 logger = logging.getLogger(__name__)
+
+
+def _kt_pro_flag(config: Optional[dict], key: str) -> bool:
+    """Read a `kt_pro.<key>.enabled` feature flag from a config dict.
+
+    Safe against missing keys, non-dict config, and `None`. Defaults to
+    False so the absence of config is equivalent to the flag being off —
+    which is the whole point of the KT-Pro flag regime.
+    """
+    if not isinstance(config, dict):
+        return False
+    kt = config.get("kt_pro") or {}
+    entry = kt.get(key) or {}
+    return bool(entry.get("enabled", False))
 
 
 class RAGQueryEngine:
@@ -24,6 +40,7 @@ class RAGQueryEngine:
         conversation_memory: Optional[ConversationMemory] = None,
         retrieve_top_k: int = 20,
         rerank_top_k: int = 5,
+        config: Optional[dict] = None,
     ):
         self.store = store
         self.llm = llm
@@ -31,6 +48,35 @@ class RAGQueryEngine:
         self.memory = conversation_memory
         self.retrieve_top_k = retrieve_top_k
         self.rerank_top_k = rerank_top_k
+        # Full config dict — used to read kt_pro.* feature flags and the
+        # tenant name. None is equivalent to "all flags off".
+        self.config = config or {}
+
+    # --- Phase 1 feature-flag helpers -------------------------------------
+    @property
+    def _six_personas_on(self) -> bool:
+        return _kt_pro_flag(self.config, "six_personas")
+
+    @property
+    def _orphan_mode_on(self) -> bool:
+        return _kt_pro_flag(self.config, "orphan_mode")
+
+    @property
+    def _tenant(self) -> str:
+        return (self.config.get("kt_pro") or {}).get("tenant", "CoreTax")
+
+    def _resolve_persona(self, persona: Optional[str]) -> Optional[str]:
+        """Normalise the requested persona against the feature-flag state.
+
+        Returns None when six-persona mode is off (so the legacy prompt
+        path is used) or when the id is unknown — falling back silently
+        avoids breaking older clients that don't send one.
+        """
+        if not self._six_personas_on:
+            return None
+        if persona and persona in personas_mod.PERSONAS:
+            return persona
+        return personas_mod.DEFAULT_PERSONA
 
     def query(
         self,
@@ -38,6 +84,7 @@ class RAGQueryEngine:
         mode: str = "explain",
         filters: dict = None,
         conversation_id: str = None,
+        persona: Optional[str] = None,
     ) -> RAGResponse:
         """
         Full RAG pipeline:
@@ -45,9 +92,12 @@ class RAGQueryEngine:
         2. Rerank to final top_k
         3. Build augmented prompt with context + conversation history
         4. Generate answer via LLM
-        5. Parse response for sources, confidence, related topics
+        5. Validate paragraph-level citations (Phase 1); retry once or
+           refuse with evidence pointers (orphan mode).
         6. Store in conversation memory
         """
+        resolved_persona = self._resolve_persona(persona)
+
         # 1. Retrieve
         retrieved = self.store.query(question, top_k=self.retrieve_top_k, filters=filters)
         logger.info(f"Retrieved {len(retrieved)} chunks for: {question[:80]}...")
@@ -67,6 +117,8 @@ class RAGQueryEngine:
             chunks=reranked,
             history=history,
             mode=mode,
+            persona=resolved_persona,
+            tenant=self._tenant,
         )
 
         # 5. Generate via LLM
@@ -76,23 +128,41 @@ class RAGQueryEngine:
             logger.error(f"LLM generation failed: {e}")
             answer = f"Error generating response: {e}"
 
+        # 5a. Citation validation (Phase 1). Only runs when six_personas
+        #     is on — the legacy prompt doesn't promise citations so
+        #     validating its output would be noise.
+        warnings: list[str] = []
+        refusal = None
+        if resolved_persona is not None:
+            answer, warnings, refusal = self._validate_and_maybe_retry(
+                answer=answer,
+                question=question,
+                persona=resolved_persona,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                reranked=reranked,
+            )
+
         # 6. Build response
         sources = self._extract_sources(reranked)
         confidence = self._assess_confidence(reranked)
         related = self._extract_related_topics(reranked)
-        diagram = self._extract_diagram(answer)
+        diagram = self._extract_diagram(answer) if not refusal else None
 
         # 7. Handle conversation memory
         if self.memory:
             if not conversation_id:
                 conversation_id = self.memory.create_conversation(title=question[:100])
-            self.memory.add_message(conversation_id, "user", question)
+            self.memory.add_message(
+                conversation_id, "user", question, persona=resolved_persona,
+            )
             self.memory.add_message(
                 conversation_id, "assistant", answer,
                 sources=[s.model_dump() for s in sources],
+                persona=resolved_persona,
             )
 
-        return RAGResponse(
+        response = RAGResponse(
             answer=answer,
             sources=sources,
             confidence=confidence,
@@ -100,7 +170,76 @@ class RAGQueryEngine:
             diagram=diagram,
             mode=mode,
             conversation_id=conversation_id,
+            persona=resolved_persona,
+            warnings=warnings,
         )
+        if refusal is not None:
+            response.refused = True
+            response.refusal_reason = refusal.reason
+            response.hints = refusal.hints
+            response.suggested_prompts = refusal.suggested_prompts
+        return response
+
+    # --- Validation helpers -----------------------------------------------
+    def _validate_and_maybe_retry(
+        self,
+        *,
+        answer: str,
+        question: str,
+        persona: str,
+        system_prompt: str,
+        user_prompt: str,
+        reranked: list,
+    ):
+        """Run the citation validator; retry once; refuse on final failure.
+
+        Returns (answer, warnings, refusal_or_None). When orphan mode is
+        off, a failing validation becomes a soft warning (legacy behaviour
+        from TASK §1.5). When orphan mode is on and the profile sets
+        `refuse_without_evidence`, we replace the answer with a structured
+        refusal markdown block and set the third tuple element.
+        """
+        warnings: list[str] = []
+        profile = personas_mod.get(persona)  # type: ignore[arg-type]
+        min_ratio = personas_mod.min_ratio_for(
+            persona, orphan_mode=self._orphan_mode_on,  # type: ignore[arg-type]
+        )
+
+        result = cite_mod.validate(answer, min_ratio=min_ratio)
+        if result.ok:
+            return answer, warnings, None
+
+        logger.info(
+            "Citation validation failed (%d/%d cited, ratio=%.2f, min=%.2f) "
+            "— retrying with explicit nudge",
+            result.paragraphs_cited, result.paragraphs_total, result.ratio, min_ratio,
+        )
+
+        nudge = (
+            "\n\nMISSING CITATIONS — the previous draft did not cite every "
+            "factual sentence. Re-answer, and ensure each paragraph contains "
+            "at least one citation of the form [file.cs:L12-L34] or "
+            "[doc §3.2]. Unsupported claims must be removed or hedged."
+        )
+        try:
+            retry_answer = self.llm.generate(user_prompt + nudge, system_prompt)
+        except Exception as e:
+            logger.warning("Citation retry LLM call failed: %s", e)
+            retry_answer = answer  # fall through to refusal branch
+
+        retry_result = cite_mod.validate(retry_answer, min_ratio=min_ratio)
+        if retry_result.ok:
+            return retry_answer, warnings, None
+
+        # Two failures in a row.
+        if self._orphan_mode_on and profile.refuse_without_evidence:
+            refusal = cite_mod.build_refusal(reranked, question=question)
+            return refusal.to_markdown(), ["refused_insufficient_evidence"], refusal
+
+        # Legacy fallback: surface the answer with a soft warning so the UI
+        # can badge it.
+        warnings.append("low_citation_rate")
+        return retry_answer, warnings, None
 
     def prepare_query(
         self,
@@ -108,6 +247,7 @@ class RAGQueryEngine:
         mode: str = "explain",
         filters: dict = None,
         conversation_id: str = None,
+        persona: Optional[str] = None,
     ) -> dict:
         """Run retrieval + rerank + prompt build WITHOUT calling the LLM.
 
@@ -133,11 +273,14 @@ class RAGQueryEngine:
         if conversation_id and self.memory:
             history = self.memory.get_history(conversation_id)
 
+        resolved_persona = self._resolve_persona(persona)
         system_prompt, user_prompt = build_rag_prompt(
             question=question,
             chunks=reranked,
             history=history,
             mode=mode,
+            persona=resolved_persona,
+            tenant=self._tenant,
         )
 
         return {
@@ -149,6 +292,7 @@ class RAGQueryEngine:
             "reranked": reranked,
             "conversation_id": conversation_id,
             "mode": mode,
+            "persona": resolved_persona,
         }
 
     def finalize_query(
@@ -160,32 +304,57 @@ class RAGQueryEngine:
         """Persist a streamed answer to memory and build a RAGResponse.
 
         Call this after `prepare_query()` + live streaming the LLM output
-        yourself. Handles conversation memory bookkeeping and diagram
-        extraction identically to the blocking `query()` path.
+        yourself. Handles conversation memory bookkeeping, citation
+        validation, and diagram extraction identically to the blocking
+        `query()` path.
         """
         sources = prepared["sources"]
         conversation_id = prepared.get("conversation_id")
+        resolved_persona = prepared.get("persona")
+
+        warnings: list[str] = []
+        refusal = None
+        if resolved_persona is not None:
+            answer, warnings, refusal = self._validate_and_maybe_retry(
+                answer=answer,
+                question=question,
+                persona=resolved_persona,
+                system_prompt=prepared["system_prompt"],
+                user_prompt=prepared["user_prompt"],
+                reranked=prepared["reranked"],
+            )
 
         if self.memory:
             if not conversation_id:
                 conversation_id = self.memory.create_conversation(
                     title=question[:100]
                 )
-            self.memory.add_message(conversation_id, "user", question)
+            self.memory.add_message(
+                conversation_id, "user", question, persona=resolved_persona,
+            )
             self.memory.add_message(
                 conversation_id, "assistant", answer,
                 sources=[s.model_dump() for s in sources],
+                persona=resolved_persona,
             )
 
-        return RAGResponse(
+        response = RAGResponse(
             answer=answer,
             sources=sources,
             confidence=prepared["confidence"],
             related_topics=prepared["related_topics"],
-            diagram=self._extract_diagram(answer),
+            diagram=self._extract_diagram(answer) if not refusal else None,
             mode=prepared["mode"],
             conversation_id=conversation_id,
+            persona=resolved_persona,
+            warnings=warnings,
         )
+        if refusal is not None:
+            response.refused = True
+            response.refusal_reason = refusal.reason
+            response.hints = refusal.hints
+            response.suggested_prompts = refusal.suggested_prompts
+        return response
 
     def trace_flow(self, entry_point: str, filters: dict = None) -> RAGResponse:
         """Specialized query for flow tracing."""
