@@ -1,0 +1,92 @@
+name: Sandbox smoke (self-hosted)
+
+# This workflow runs the full end-to-end smoke test (`scripts/smoke_kt_pro.sh`)
+# against a live sandbox instance. It needs Ollama and any locally-built tools
+# (Roslyn bridge, mermaid-cli, LibreOffice), so it runs on a SELF-HOSTED
+# runner that lives inside an air-gapped or internal network. GitHub-hosted
+# runners cannot satisfy these prerequisites.
+#
+# Trigger options:
+#   * manual dispatch from the Actions tab (preferred during development)
+#   * nightly cron (once a sandbox tenant is stable — adjust as needed)
+#   * any PR labeled `smoke-me`
+
+on:
+  workflow_dispatch:
+    inputs:
+      sandbox_name:
+        description: 'Sandbox instance name'
+        required: true
+        default: 'kt-pro-ci'
+  schedule:
+    # Nightly at 02:00 UTC. Change or remove once cadence is agreed.
+    - cron: '0 2 * * *'
+  pull_request:
+    types: [labeled]
+
+jobs:
+  smoke:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'smoke-me')
+    name: End-to-end sandbox smoke
+    runs-on: [self-hosted, lumen-smoke]    # label your self-hosted runner with these tags
+    timeout-minutes: 40
+    env:
+      AIRGAP: '1'
+      SANDBOX_NAME: ${{ github.event.inputs.sandbox_name || 'kt-pro-ci' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tool discovery
+        run: |
+          set -e
+          command -v python3
+          command -v ollama || { echo "Ollama not installed on this runner"; exit 1; }
+          command -v soffice || echo "LibreOffice not present — PDFs will be skipped"
+          command -v mmdc    || echo "mermaid-cli not present — Pillow fallback will render"
+
+      - name: Start services
+        run: |
+          ./scripts/sandbox_start.sh
+
+      - name: Wait for UI + API
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8513/_stcore/health >/dev/null && \
+            curl -sf http://127.0.0.1:8090/healthz >/dev/null && break
+            sleep 2
+          done
+
+      - name: Run smoke script
+        run: |
+          if [ -x ./scripts/smoke_kt_pro.sh ]; then
+            TARGET=http://127.0.0.1:8090 ./scripts/smoke_kt_pro.sh
+          else
+            echo "smoke_kt_pro.sh not present yet — skipping end-to-end check"
+          fi
+
+      - name: Run eval harness (if present)
+        run: |
+          if [ -d tests/eval ]; then
+            pytest tests/eval -q
+          fi
+
+      - name: Collect artefacts
+        if: always()
+        run: |
+          mkdir -p smoke_artefacts
+          cp -r knowledge_base/sandbox/$SANDBOX_NAME/logs smoke_artefacts/ 2>/dev/null || true
+          cp -r knowledge_base/sandbox/$SANDBOX_NAME/docs_output smoke_artefacts/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-${{ env.SANDBOX_NAME }}-${{ github.run_id }}
+          path: smoke_artefacts/
+          retention-days: 7
+
+      - name: Stop services
+        if: always()
+        run: ./scripts/sandbox_stop.sh

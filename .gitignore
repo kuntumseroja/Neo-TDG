@@ -15,6 +15,21 @@ env/
 # Knowledge base (persisted data)
 knowledge_base/chroma/
 knowledge_base/*.db
+knowledge_base/sandbox/
+knowledge_base/prod_backup_*.tar
+
+# KT-Pro sandbox / CI artefacts
+ci_out/
+smoke_artefacts/
+diff_report.md
+
+# .NET build artefacts (essa/ sample solution)
+essa/**/bin/
+essa/**/obj/
+essa/packages/
+
+# Stray generated DOCX in docs root (reference lives in docs/reference/)
+docs/ESSA_KT_Document.docx
 
 # Environment
 .env
