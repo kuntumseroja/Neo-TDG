@@ -14,6 +14,12 @@ _project_root = str(Path(__file__).resolve().parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+# Resolve sandbox paths/ports BEFORE importing anything that opens a file or
+# socket. Every stateful module reads its location through src.ops.sandbox.
+from src.ops import sandbox
+
+SANDBOX = sandbox.bootstrap()
+
 import logging
 import streamlit as st
 import yaml
@@ -26,8 +32,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Page config
+_title_suffix = f" — {SANDBOX.name}" if SANDBOX.is_sandbox else ""
 st.set_page_config(
-    page_title="Lumen.AI | SDLC Knowledge Engine",
+    page_title=f"Lumen.AI | SDLC Knowledge Engine{_title_suffix}",
     page_icon="\U0001f9e0",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -38,6 +45,12 @@ st.markdown(THEME_CSS, unsafe_allow_html=True)
 
 # Light gradient header bar
 st.markdown(HEADER_HTML, unsafe_allow_html=True)
+
+if SANDBOX.is_sandbox:
+    st.warning(
+        f"🧪 SANDBOX MODE — `{SANDBOX.name}`. "
+        f"State lives under `{SANDBOX.paths.knowledge_root}`. Production is untouched."
+    )
 
 # Initialize session state
 init_session_state()
@@ -78,7 +91,9 @@ def initialize_services(config: dict):
         from src.pipeline.ingestion import DocumentIngestionPipeline
 
         ks_config = config.get("knowledge_store", {})
-        persist_dir = ks_config.get("persist_dir", "./knowledge_base")
+        # Sandbox overrides the config persist_dir so branch builds never
+        # write into the production knowledge base.
+        persist_dir = str(SANDBOX.paths.knowledge_root)
 
         # Embedding provider
         embedding_provider = create_embedding_provider(config)
@@ -104,8 +119,9 @@ def initialize_services(config: dict):
         reranker_config = ks_config.get("reranker", {})
         reranker = BM25VectorFusionReranker(alpha=reranker_config.get("alpha", 0.5))
 
-        # Conversation memory
-        memory = ConversationMemory(str(Path(persist_dir) / "conversations.db"))
+        # Conversation memory — path comes from sandbox so branch chat history
+        # never contaminates production.
+        memory = ConversationMemory(str(SANDBOX.paths.conversations_db))
         st.session_state.memory = memory
 
         # RAG engine
@@ -171,12 +187,20 @@ with st.sidebar:
 
     # Knowledge store info
     with st.expander("Knowledge Store", expanded=False):
-        persist_dir = st.text_input(
-            "Persist Directory",
-            value=config.get("knowledge_store", {}).get("persist_dir", "./knowledge_base"),
-            key="persist_dir",
-        )
-        config.setdefault("knowledge_store", {})["persist_dir"] = persist_dir
+        if SANDBOX.is_sandbox:
+            st.text_input(
+                "Persist Directory (sandbox — read-only)",
+                value=str(SANDBOX.paths.knowledge_root),
+                key="persist_dir",
+                disabled=True,
+            )
+        else:
+            persist_dir = st.text_input(
+                "Persist Directory",
+                value=config.get("knowledge_store", {}).get("persist_dir", "./knowledge_base"),
+                key="persist_dir",
+            )
+            config.setdefault("knowledge_store", {})["persist_dir"] = persist_dir
 
         if st.session_state.get("store"):
             stats = st.session_state.store.get_stats()
@@ -217,6 +241,8 @@ NAV_ITEMS = [
     ("🛠", "SDLC Tools", "sdlc"),
     ("✅", "QA Test Generator", "qa_testcase"),
 ]
+if SANDBOX.is_sandbox:
+    NAV_ITEMS.append(("🧪", "Sandbox Diff", "sandbox_diff"))
 
 if "nav_page" not in st.session_state:
     st.session_state.nav_page = "crawler"
@@ -256,3 +282,6 @@ elif page_key == "sdlc":
 elif page_key == "qa_testcase":
     from src.ui.page_qa_testcase import render_qa_testcase
     render_qa_testcase()
+elif page_key == "sandbox_diff":
+    from src.ui.page_sandbox_diff import render_sandbox_diff
+    render_sandbox_diff()

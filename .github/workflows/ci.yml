@@ -1,0 +1,185 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Lint — fast, runs first so bad formatting fails in < 1 min
+  # -------------------------------------------------------------------------
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install ruff
+        run: pip install ruff
+      - name: Ruff
+        # Non-blocking during early KT-Pro phases — flip to `ruff check ...`
+        # (without `|| true`) once the codebase is lint-clean.
+        run: ruff check src/ tests/ || true
+
+  # -------------------------------------------------------------------------
+  # Unit tests + eval harness (no LLM calls — tests must mock the LLM)
+  # -------------------------------------------------------------------------
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+      - name: Run unit tests
+        env:
+          AIRGAP: '1'               # force airgap mode in CI; no outbound allowed
+          SANDBOX_NAME: 'ci'        # route all state to a disposable CI sandbox
+        run: pytest -q --maxfail=1
+      - name: Run eval harness (if present)
+        env:
+          AIRGAP: '1'
+          SANDBOX_NAME: 'ci'
+        run: |
+          if [ -d tests/eval ]; then
+            pytest tests/eval -q --maxfail=1
+          else
+            echo "tests/eval not present yet — skipping"
+          fi
+
+  # -------------------------------------------------------------------------
+  # Guardrails — grep-based checks that enforce KT-Pro conventions
+  # -------------------------------------------------------------------------
+  guardrails:
+    name: Code guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No hard-coded state paths or ports outside src/ops/sandbox.py
+        run: |
+          set -e
+          if grep -RInE 'knowledge_base/chroma|conversations\.db|:8503|:8080|:5050' src/ \
+               --exclude-dir=__pycache__ \
+               | grep -v 'src/ops/sandbox.py' ; then
+            echo "FAIL — hard-coded state path or port. Route through src/ops/sandbox.py"
+            exit 1
+          fi
+          echo "OK"
+
+      - name: No hard-coded 'CoreTax' in production code paths
+        # Allowed: tests/fixtures, examples, architecture_rules (rule files),
+        # docs, and this workflow itself.
+        run: |
+          set -e
+          if grep -RIn 'CoreTax' src/ \
+               --exclude-dir=__pycache__ ; then
+            echo "WARNING — 'CoreTax' found in src/. Phase 6 of TASK_KT_PRO_UPGRADE.md removes these."
+            # Non-fatal during early phases. Flip to `exit 1` after Phase 6 lands.
+          else
+            echo "OK"
+          fi
+
+      - name: No new outbound URLs in new KT-Pro modules
+        # Runs only against files the KT-Pro plan introduces. Loopback
+        # (127.0.0.1 / localhost) and docstring examples are allowed.
+        run: |
+          set -e
+          FILES="\
+            src/rag/personas.py \
+            src/rag/citation_validator.py \
+            src/rag/self_critique.py \
+            src/crawler/persona_composer.py \
+            src/crawler/docx_builder.py \
+            src/crawler/persona_outlines.py \
+            src/crawler/roslyn_bridge.py \
+            src/crawler/treesitter_bridge.py \
+            src/crawler/diagram_renderer.py \
+            src/knowledge/symbol_chunker.py \
+            src/ops/sandbox.py \
+            src/ops/airgap_probe.py \
+            src/sdlc/gap_analyser.py"
+          for f in $FILES; do
+            [ -f "$f" ] || continue
+            if grep -nE 'https?://' "$f" | grep -vE '127\.0\.0\.1|localhost|#|"""|###' ; then
+              echo "FAIL — outbound URL in $f"
+              exit 1
+            fi
+          done
+          echo "OK"
+
+      - name: PR template fields present (PR builds only)
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python - <<'PY'
+          import os, sys
+          body = os.environ.get("PR_BODY") or ""
+          required = ["## Summary", "## KT-Pro task references",
+                      "## Acceptance criteria met", "## Sandbox validation",
+                      "## Feature flag", "## Airgap check"]
+          missing = [h for h in required if h not in body]
+          if missing:
+              print("FAIL — PR body is missing sections:", missing)
+              sys.exit(1)
+          print("OK")
+          PY
+
+  # -------------------------------------------------------------------------
+  # DOCX style smoke — if docx_builder is present, generate a fixture DOCX
+  # and round-trip it through python-docx to prove it's well-formed.
+  # -------------------------------------------------------------------------
+  docx_smoke:
+    name: DOCX round-trip
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+      - name: Round-trip
+        run: |
+          python - <<'PY'
+          import importlib.util, sys, pathlib
+          spec = importlib.util.find_spec("src.crawler.docx_builder")
+          if spec is None:
+              print("docx_builder not present yet — skipping")
+              sys.exit(0)
+          from src.crawler.docx_builder import DocxBuilder
+          from docx import Document
+          out = pathlib.Path("ci_out/smoke.docx")
+          out.parent.mkdir(exist_ok=True)
+          b = DocxBuilder(title="CI smoke", subtitle="KT-Pro",
+                          tenant="default", persona="developer")
+          b.cover(audience="CI", status="smoke", date="today")
+          b.h1("1. Heading"); b.p("Body.")
+          b.code("x = 1"); b.callout("Note", "hello")
+          b.table(header=["A","B"], rows=[["1","2"]], widths_dxa=[4800,4800])
+          b.save(str(out))
+          d = Document(str(out))     # raises if malformed
+          assert any(p.text for p in d.paragraphs), "empty doc"
+          print("OK — DOCX round-trips cleanly")
+          PY

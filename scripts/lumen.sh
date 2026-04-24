@@ -197,6 +197,43 @@ logs() {
   tail -f "$STREAMLIT_LOG"
 }
 
+# ── Sandbox (delegates to scripts/sandbox_*.sh) ──────────────────────────────
+sandbox() {
+  local sub="${1:-}" name="${2:-}"
+  case "$sub" in
+    start)     "$SCRIPT_DIR/sandbox_start.sh" "$name" ;;
+    stop)      "$SCRIPT_DIR/sandbox_stop.sh"  "$name" ;;
+    snapshot)  "$SCRIPT_DIR/sandbox_snapshot.sh" "$name" ;;
+    promote)   "$SCRIPT_DIR/sandbox_promote.sh"  "$name" ;;
+    diff)      "$PYTHON_BIN" "$SCRIPT_DIR/sandbox_diff.py" "$name" ;;
+    status)
+      hdr "Sandboxes under knowledge_base/sandbox/"
+      for d in "$ROOT_DIR"/knowledge_base/sandbox/*/; do
+        [ -d "$d" ] || continue
+        local n; n="$(basename "$d")"
+        local pid_file="$d/run/streamlit.pid"
+        local state="stopped"
+        [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null && state="running"
+        printf "  %-24s %s\n" "$n" "$state"
+      done
+      ;;
+    *)
+      cat <<EOF
+Usage: $0 sandbox <subcommand> <name>
+
+Subcommands:
+  start <name>      Launch an isolated Streamlit on :8513 under SANDBOX_NAME
+  stop  <name>      Stop a running sandbox
+  snapshot <name>   Copy prod knowledge_base → sandbox for testing
+  promote  <name>   Replace prod knowledge_base with sandbox state (manual)
+  diff  <name>      Markdown diff of sandbox vs prod stats
+  status            List all sandboxes and their state
+EOF
+      return 1
+      ;;
+  esac
+}
+
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 action=${1:-}
 
@@ -206,6 +243,7 @@ case "$action" in
   restart) stop_streamlit; sleep 1; start_streamlit ;;
   status)  status ;;
   logs)    logs ;;
+  sandbox) shift; sandbox "$@" ;;
   *)
     cat <<EOF
 ${C_BOLD}Lumen.AI Service Manager${C_RESET}
@@ -218,6 +256,7 @@ Commands:
   restart    Restart the Streamlit app
   status     Show service status (Streamlit + embedded Chroma; probes Ollama for visibility)
   logs       Tail the Streamlit log
+  sandbox    Manage branch-isolated sandbox instances — see: $0 sandbox
 
 Environment overrides:
   LUMEN_STREAMLIT_PORT  (default 8503)

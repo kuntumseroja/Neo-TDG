@@ -1,0 +1,44 @@
+# CODEOWNERS — who must approve PRs that touch each area.
+#
+# Syntax:  <path-glob>   @user-or-team
+# GitHub enforces this when the repo has branch protection with
+# "Require review from Code Owners" enabled.
+#
+# Replace the placeholder handles (e.g. @kuntumseroja) with real teammates
+# before enabling enforcement. Until then this file documents intent.
+
+# ---- default owner ------------------------------------------------------
+*                                @kuntumseroja
+
+# ---- high-risk areas — require extra review ----------------------------
+# Prompt templates shape every LLM answer. Changes here affect quality
+# across every tenant.
+src/rag/personas.py              @kuntumseroja
+src/rag/prompts.py               @kuntumseroja
+src/rag/self_critique.py         @kuntumseroja
+src/rag/citation_validator.py    @kuntumseroja
+
+# Retrieval and indexing — corruption here permanently damages the
+# knowledge store.
+src/knowledge/**                 @kuntumseroja
+src/pipeline/ingestion.py        @kuntumseroja
+src/rag/reranker.py              @kuntumseroja
+
+# Sandbox infrastructure — protect the protection.
+src/ops/sandbox.py               @kuntumseroja
+scripts/sandbox_*.sh             @kuntumseroja
+
+# Airgap / security — never merged without a security review eye.
+src/ops/airgap_probe.py          @kuntumseroja
+docs/TASK_AIRGAP_HARDENING.md    @kuntumseroja
+.github/workflows/**             @kuntumseroja
+
+# Architecture rule files — changes affect validator outcomes for
+# every customer using those rules.
+architecture_rules/**            @kuntumseroja
+
+# Reference artefacts — style-spec source of truth; should not drift.
+docs/reference/**                @kuntumseroja
+
+# ---- low-risk areas — default owner is fine ----------------------------
+# Everything else inherits the default owner above.
