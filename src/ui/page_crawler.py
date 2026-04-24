@@ -319,6 +319,79 @@ def render_solution_crawler():
                 )
                 render_markdown_with_mermaid(md_report)
 
+    # ── KT Bundle (per-persona DOCX) ──────────────────────────────
+    # Gated on kt_pro.docx_bundle.enabled so crawls default to the
+    # legacy Markdown output until the flag flips on. Six personas, six
+    # downloads; PDF only appears when LibreOffice (soffice) is on PATH.
+    cfg = st.session_state.get("config") or {}
+    _kt_bundle_enabled = bool(
+        ((cfg.get("kt_pro") or {}).get("docx_bundle") or {}).get("enabled")
+    )
+    if st.session_state.get("last_crawl_report") and _kt_bundle_enabled:
+        st.divider()
+        st.subheader("KT Bundle (per-persona)")
+        st.caption(
+            "Generate six polished `.docx` (and optional `.pdf`) — one for "
+            "each persona (Architect, Developer, Tester, L1, L2, L3). Every "
+            "answer is composed under the matching persona prompt."
+        )
+        if st.button("Build KT Bundle", type="primary", key="build_kt_bundle"):
+            with st.spinner("Composing six persona documents — this can take a while..."):
+                try:
+                    from src.crawler.persona_composer import compose_all
+                    from src.ops import sandbox as _sandbox
+
+                    tenant = (cfg.get("kt_pro") or {}).get("tenant", "CoreTax")
+                    out_dir = _sandbox.context().paths.knowledge_root.parent / "kt_bundles" / "ui"
+                    produced = compose_all(
+                        report=st.session_state.last_crawl_report,
+                        validation=st.session_state.get("last_validation_report"),
+                        tenant=tenant,
+                        out_dir=str(out_dir),
+                        rag_engine=st.session_state.get("rag_engine"),
+                    )
+                    st.session_state["_kt_bundle_paths"] = [str(p) for p in produced]
+                    st.success(f"Produced {len(produced)} artefact(s).")
+                except Exception as e:
+                    st.error(f"KT bundle build failed: {e}")
+                    logger.exception("KT bundle build crashed")
+
+        artefacts = st.session_state.get("_kt_bundle_paths") or []
+        if artefacts:
+            docx_paths = [Path(p) for p in artefacts if p.endswith(".docx")]
+            pdf_paths = [Path(p) for p in artefacts if p.endswith(".pdf")]
+            st.caption(
+                f"{len(docx_paths)} DOCX"
+                + (f" · {len(pdf_paths)} PDF" if pdf_paths else " · PDF skipped (LibreOffice not on PATH)")
+            )
+            # 2x3 grid of DOCX downloads. PDF sits under its DOCX when
+            # present so users see the pair together.
+            cols = st.columns(3)
+            for i, dp in enumerate(docx_paths):
+                with cols[i % 3]:
+                    persona_label = dp.stem.split("_")[-2] if "_" in dp.stem else dp.stem
+                    st.markdown(f"**{persona_label.upper()}**")
+                    try:
+                        st.download_button(
+                            f"DOCX ({dp.stat().st_size // 1024} KB)",
+                            data=dp.read_bytes(),
+                            file_name=dp.name,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            key=f"dl_bundle_docx_{i}",
+                        )
+                    except Exception as ex:
+                        st.caption(f"unavailable: {ex}")
+                    # Match PDF by stem
+                    pdf = next((p for p in pdf_paths if p.stem == dp.stem), None)
+                    if pdf and pdf.exists():
+                        st.download_button(
+                            "PDF",
+                            data=pdf.read_bytes(),
+                            file_name=pdf.name,
+                            mime="application/pdf",
+                            key=f"dl_bundle_pdf_{i}",
+                        )
+
     # ── Code Documentation Generator ──────────────────────────────
     # Doxygen-style per-symbol API reference for every C# and
     # Angular/TypeScript file in the crawled solution. Builds on top of
